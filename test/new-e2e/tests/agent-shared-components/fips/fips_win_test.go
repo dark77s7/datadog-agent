@@ -31,6 +31,7 @@ type windowsVMSuite struct {
 }
 
 func TestWindowsVM(t *testing.T) {
+	t.Parallel()
 	suiteParams := []e2e.SuiteOption{e2e.WithProvisioner(awsHostWindows.ProvisionerNoFakeIntake(
 		// Enable FIPS mode on the host (done before Agent install)
 		awsHostWindows.WithFIPSModeOptions(fipsmode.WithFIPSModeEnabled()),

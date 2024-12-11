@@ -102,7 +102,7 @@ func NewOTLPReceiver(out chan<- *Payload, cfg *config.AgentConfig, statsd statsd
 		enableReceiveResourceSpansV2Val = 1.0
 	}
 	_ = statsd.Gauge("datadog.trace_agent.otlp.enable_receive_resource_spans_v2", enableReceiveResourceSpansV2Val, nil, 1)
-	return &OTLPReceiver{out: out, conf: cfg, cidProvider: NewIDProvider(cfg.ContainerProcRoot), statsd: statsd, timing: timing, ignoreResNames: ignoreResNames}
+	return &OTLPReceiver{out: out, conf: cfg, cidProvider: NewIDProvider(cfg.ContainerProcRoot, cfg.ContainerIDFromExternalData), statsd: statsd, timing: timing, ignoreResNames: ignoreResNames}
 }
 
 // Start starts the OTLPReceiver, if any of the servers were configured as active.

@@ -8,6 +8,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"github.com/DataDog/datadog-agent/comp/core/tagger/origindetection"
 	"html"
 	"net/http"
 	"net/url"
@@ -120,6 +121,9 @@ func prepareConfig(c corecompcfg.Component, tagger tagger.Component) (*config.Ag
 	}
 	cfg.ContainerTags = func(cid string) ([]string, error) {
 		return tagger.Tag(types.NewEntityID(types.ContainerID, cid), types.HighCardinality)
+	}
+	cfg.ContainerIDFromExternalData = func(externalData origindetection.ExternalData) (string, error) {
+		return tagger.GenerateContainerIDFromExternalData(externalData)
 	}
 	cfg.ContainerProcRoot = coreConfigObject.GetString("container_proc_root")
 	cfg.GetAgentAuthToken = apiutil.GetAuthToken

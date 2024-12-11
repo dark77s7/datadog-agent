@@ -17,6 +17,7 @@ import (
 
 	"github.com/DataDog/opentelemetry-mapping-go/pkg/otlp/attributes"
 
+	"github.com/DataDog/datadog-agent/comp/core/tagger/origindetection"
 	"github.com/DataDog/datadog-agent/pkg/obfuscate"
 	"github.com/DataDog/datadog-agent/pkg/remoteconfig/state"
 	"github.com/DataDog/datadog-agent/pkg/trace/log"
@@ -445,6 +446,9 @@ type AgentConfig struct {
 	// ContainerTags ...
 	ContainerTags func(cid string) ([]string, error) `json:"-"`
 
+	// ContainerIDFromExternalData retrieves the container ID generated from the External Data
+	ContainerIDFromExternalData func(externalData origindetection.ExternalData) (string, error) `json:"-"`
+
 	// ContainerProcRoot is the root dir for `proc` info
 	ContainerProcRoot string
 
@@ -542,9 +546,10 @@ func New() *AgentConfig {
 
 		GlobalTags: computeGlobalTags(),
 
-		Proxy:         http.ProxyFromEnvironment,
-		OTLPReceiver:  &OTLP{},
-		ContainerTags: noopContainerTagsFunc,
+		Proxy:                       http.ProxyFromEnvironment,
+		OTLPReceiver:                &OTLP{},
+		ContainerTags:               noopContainerTagsFunc,
+		ContainerIDFromExternalData: noopContainerIDFromExternalDataFunc,
 		TelemetryConfig: &TelemetryConfig{
 			Endpoints: []*Endpoint{{Host: TelemetryEndpointPrefix + "datadoghq.com"}},
 		},
@@ -571,6 +576,13 @@ var ErrContainerTagsFuncNotDefined = errors.New("containerTags function not defi
 
 func noopContainerTagsFunc(_ string) ([]string, error) {
 	return nil, ErrContainerTagsFuncNotDefined
+}
+
+// ErrContainerIDFromExternalDataFuncNotDefined is returned when the containerIDFromExternalData function is not defined.
+var ErrContainerIDFromExternalDataFuncNotDefined = errors.New("containerIDFromExternalData function not defined")
+
+func noopContainerIDFromExternalDataFunc(_ origindetection.ExternalData) (string, error) {
+	return "", ErrContainerIDFromExternalDataFuncNotDefined
 }
 
 // APIKey returns the first (main) endpoint's API key.

@@ -52,7 +52,10 @@ require (
 	k8s.io/apimachinery v0.31.2
 )
 
-require go.opentelemetry.io/collector/component/componenttest v0.115.0
+require (
+	github.com/DataDog/datadog-agent/comp/core/tagger/origindetection v0.0.0-00010101000000-000000000000
+	go.opentelemetry.io/collector/component/componenttest v0.115.0
+)
 
 require go.opentelemetry.io/collector/processor v0.115.0 // indirect
 
@@ -114,6 +117,7 @@ require (
 
 replace (
 	github.com/DataDog/datadog-agent => ../../
+	github.com/DataDog/datadog-agent/comp/core/tagger/origindetection => ../../comp/core/tagger/origindetection
 	github.com/DataDog/datadog-agent/comp/trace/compression/def => ../../comp/trace/compression/def
 	github.com/DataDog/datadog-agent/comp/trace/compression/impl-gzip => ../../comp/trace/compression/impl-gzip
 	github.com/DataDog/datadog-agent/comp/trace/compression/impl-zstd => ../../comp/trace/compression/impl-zstd

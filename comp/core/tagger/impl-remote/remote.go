@@ -259,6 +259,15 @@ func (t *remoteTagger) LegacyTag(entity string, cardinality types.TagCardinality
 
 // GenerateContainerIDFromExternalData returns a container ID for the given external data.
 func (t *remoteTagger) GenerateContainerIDFromExternalData(externalData origindetection.ExternalData) (string, error) {
+	fail := true
+	defer func() {
+		t.log.Errorf("External data request failed: %v", fail)
+		if fail {
+			t.telemetryStore.ExternalDataRequests.Inc("failed")
+		} else {
+			t.telemetryStore.ExternalDataRequests.Inc("success")
+		}
+	}()
 	expBackoff := backoff.NewExponentialBackOff()
 	expBackoff.InitialInterval = 500 * time.Millisecond
 	expBackoff.MaxInterval = 1 * time.Second
@@ -272,8 +281,6 @@ func (t *remoteTagger) GenerateContainerIDFromExternalData(externalData originde
 			return &backoff.PermanentError{Err: errTaggerFailedGenerateContainerIDFromExternalData}
 		default:
 		}
-
-		t.telemetryStore.ExternalDataRequests.Inc()
 
 		// Fetch the auth token
 		if t.token == "" {
@@ -309,8 +316,9 @@ func (t *remoteTagger) GenerateContainerIDFromExternalData(externalData originde
 		}
 		containerID = containerIDResponse.ContainerID
 
-		t.telemetryStore.ExternalDataSuccess.Inc()
-		t.log.Debugf("Container ID generated successfully from external data %+v: %s", externalData, containerID)
+		fail = false
+		// TODO (wassim): remove debug log
+		t.log.Errorf("Container ID generated successfully from external data %+v: %s", externalData, containerID)
 		return nil
 	}, expBackoff)
 

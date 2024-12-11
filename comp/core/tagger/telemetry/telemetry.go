@@ -65,9 +65,6 @@ type Store struct {
 	// to generate a container ID from external data.
 	ExternalDataRequests telemetry.Counter
 
-	// ExternalDataSuccess tracks the number of successful resolutions of ExternalData.
-	ExternalDataSuccess telemetry.Counter
-
 	LowCardinalityQueries          CardinalityTelemetry
 	OrchestratorCardinalityQueries CardinalityTelemetry
 	HighCardinalityQueries         CardinalityTelemetry
@@ -136,6 +133,13 @@ func NewStore(telemetryComp telemetry.Component) *Store {
 			// Remote
 			Receives: telemetryComp.NewCounterWithOpts(subsystem, "receives",
 				[]string{}, "Number of of times the tagger has received a notification with a group of events",
+				telemetry.Options{NoDoubleUnderscoreSep: true}),
+
+			// ExternalDataRequests tracks the number of requests to the tagger
+			// to generate a container ID from external data.
+			// Remote
+			ExternalDataRequests: telemetryComp.NewCounterWithOpts(subsystem, "external_data_requests",
+				[]string{"status"}, "Number of of times the tagger has received an external data request",
 				telemetry.Options{NoDoubleUnderscoreSep: true}),
 
 			LowCardinalityQueries:          newCardinalityTelemetry(queries, types.LowCardinalityString),

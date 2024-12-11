@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/DataDog/datadog-agent/comp/core/config"
 	"github.com/DataDog/datadog-agent/comp/core/tagger/collectors"
@@ -20,6 +21,8 @@ import (
 	workloadmeta "github.com/DataDog/datadog-agent/comp/core/workloadmeta/def"
 	taggertypes "github.com/DataDog/datadog-agent/pkg/tagger/types"
 	"github.com/DataDog/datadog-agent/pkg/tagset"
+	"github.com/DataDog/datadog-agent/pkg/util/containers/metrics"
+	"github.com/DataDog/datadog-agent/pkg/util/optional"
 )
 
 // Tagger is the entry class for entity tagging. It hold the tagger collector,
@@ -102,8 +105,9 @@ func (t *localTagger) Tag(entityID types.EntityID, cardinality types.TagCardinal
 
 // GenerateContainerIDFromExternalData generates a container ID from the external data.
 // This is a no-op for the local tagger
-func (t *localTagger) GenerateContainerIDFromExternalData(_ origindetection.ExternalData) (string, error) {
-	return "", nil
+func (t *localTagger) GenerateContainerIDFromExternalData(externalData origindetection.ExternalData) (string, error) {
+	metaCollector := metrics.GetProvider(optional.NewOption(t.workloadStore)).GetMetaCollector()
+	return metaCollector.ContainerIDForPodUIDAndContName(externalData.PodUID, externalData.ContainerName, externalData.Init, time.Second)
 }
 
 // LegacyTag has the same behaviour as the Tag method, but it receives the entity id as a string and parses it.

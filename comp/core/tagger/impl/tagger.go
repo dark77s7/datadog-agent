@@ -541,8 +541,7 @@ func (t *TaggerWrapper) EnrichTags(tb tagset.TagsAccumulator, originInfo taggert
 
 // GenerateContainerIDFromExternalData generates a container ID from the external data.
 func (t *TaggerWrapper) GenerateContainerIDFromExternalData(externalData origindetection.ExternalData) (string, error) {
-	metaCollector := metrics.GetProvider(optional.NewOption(t.wmeta)).GetMetaCollector()
-	return metaCollector.ContainerIDForPodUIDAndContName(externalData.PodUID, externalData.ContainerName, externalData.Init, time.Second)
+	return t.defaultTagger.GenerateContainerIDFromExternalData(externalData)
 }
 
 // generateContainerIDFromExternalData generates a container ID from the external data

@@ -3,6 +3,9 @@
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
 // Copyright 2016-present Datadog, Inc.
 
+// TODO: A lot of the code in this file is currently duplicated in taggertypes.
+// We will need to move all the code in taggertype to this file and remove the taggertypes package.
+
 // Package origindetection contains the types and functions used for Origin Detection.
 package origindetection
 

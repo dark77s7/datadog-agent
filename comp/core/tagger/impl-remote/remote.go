@@ -78,6 +78,7 @@ type remoteTagger struct {
 	log log.Component
 
 	conn   *grpc.ClientConn
+	token  string
 	client pb.AgentSecureClient
 	stream pb.AgentSecure_TaggerStreamEntitiesClient
 
@@ -267,8 +268,6 @@ func (t *remoteTagger) GenerateContainerIDFromExternalData(externalData originde
 
 	err := backoff.Retry(func() error {
 		select {
-		case <-t.telemetryTicker.C:
-			t.store.collectTelemetry()
 		case <-t.ctx.Done():
 			return &backoff.PermanentError{Err: errTaggerFailedGenerateContainerIDFromExternalData}
 		default:
@@ -277,16 +276,19 @@ func (t *remoteTagger) GenerateContainerIDFromExternalData(externalData originde
 		t.telemetryStore.ExternalDataRequests.Inc()
 
 		// Fetch the auth token
-		token, err := t.options.TokenFetcher()
-		if err != nil {
-			_ = t.log.Errorf("unable to fetch auth token, will possibly retry: %s", err)
-			return err
+		if t.token == "" {
+			var authError error
+			t.token, authError = t.options.TokenFetcher()
+			if authError != nil {
+				_ = t.log.Errorf("unable to fetch auth token, will possibly retry: %s", authError)
+				return authError
+			}
 		}
 
 		// Create the context with the auth token
 		t.queryCtx, t.queryCancel = context.WithCancel(
 			metadata.NewOutgoingContext(t.ctx, metadata.MD{
-				"authorization": []string{fmt.Sprintf("Bearer %s", token)},
+				"authorization": []string{fmt.Sprintf("Bearer %s", t.token)},
 			}),
 		)
 
@@ -307,7 +309,7 @@ func (t *remoteTagger) GenerateContainerIDFromExternalData(externalData originde
 		}
 		containerID = containerIDResponse.ContainerID
 
-		t.telemetryStore.ExternalDataRequests.Inc()
+		t.telemetryStore.ExternalDataSuccess.Inc()
 		t.log.Debugf("Container ID generated successfully from external data %+v: %s", externalData, containerID)
 		return nil
 	}, expBackoff)

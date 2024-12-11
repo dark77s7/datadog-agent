@@ -2253,6 +2253,90 @@ func TestHandleContainerImage(t *testing.T) {
 	}
 }
 
+func TestHandleGPU(t *testing.T) {
+	entityID := workloadmeta.EntityID{
+		Kind: workloadmeta.KindGPU,
+		ID:   "gpu-1234",
+	}
+
+	taggerEntityID := types.NewEntityID(types.ContainerImageMetadata, entityID.ID)
+
+	tests := []struct {
+		name     string
+		image    workloadmeta.ContainerImageMetadata
+		expected []*types.TagInfo
+	}{
+		{
+			name: "basic",
+			image: workloadmeta.ContainerImageMetadata{
+				EntityID: entityID,
+				EntityMeta: workloadmeta.EntityMeta{
+					Name: entityID.ID,
+					Labels: map[string]string{
+						"com.datadoghq.tags.env":     "production",
+						"com.datadoghq.tags.service": "datadog-agent",
+						"com.datadoghq.tags.version": "8.0.0",
+					},
+				},
+				RepoTags: []string{
+					"datadog/agent:7.41.1-rc.1",
+					"gcr.io/datadoghq/agent:7-rc",
+					"gcr.io/datadoghq/agent:7.41.1-rc.1",
+					"public.ecr.aws/datadog/agent:7-rc",
+					"public.ecr.aws/datadog/agent:7.41.1-rc.1",
+				},
+				RepoDigests: []string{
+					"datadog/agent@sha256:052f1fdf4f9a7117d36a1838ab60782829947683007c34b69d4991576375c409",
+					"gcr.io/datadoghq/agent@sha256:052f1fdf4f9a7117d36a1838ab60782829947683007c34b69d4991576375c409",
+					"public.ecr.aws/datadog/agent@sha256:052f1fdf4f9a7117d36a1838ab60782829947683007c34b69d4991576375c409",
+				},
+				OS:           "DOS",
+				OSVersion:    "6.22",
+				Architecture: "80486DX",
+			},
+			expected: []*types.TagInfo{
+				{
+					Source:               containerImageSource,
+					EntityID:             taggerEntityID,
+					HighCardTags:         []string{},
+					OrchestratorCardTags: []string{},
+					LowCardTags: []string{
+						"architecture:80486DX",
+						"env:production",
+						"image_name:sha256:651c55002cd5deb06bde7258f6ec6e0ff7f4f17a648ce6e2ec01917da9ae5104",
+						"image_tag:7-rc",
+						"image_tag:7.41.1-rc.1",
+						"os_name:DOS",
+						"os_version:6.22",
+						"service:datadog-agent",
+						"short_image:agent",
+						"version:8.0.0",
+					},
+					StandardTags: []string{
+						"env:production",
+						"service:datadog-agent",
+						"version:8.0.0",
+					},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := configmock.New(t)
+			collector := NewWorkloadMetaCollector(context.Background(), cfg, nil, nil)
+
+			actual := collector.handleContainerImage(workloadmeta.Event{
+				Type:   workloadmeta.EventTypeSet,
+				Entity: &tt.image,
+			})
+
+			assertTagInfoListEqual(t, tt.expected, actual)
+		})
+	}
+}
+
 func TestHandleDelete(t *testing.T) {
 	const (
 		podName       = "datadog-agent-foobar"

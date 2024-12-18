@@ -33,6 +33,7 @@ typedef unsigned long long ctx_t;
 #define CTX_PARM4(ctx) (u64)(ctx[3])
 #define CTX_PARM5(ctx) (u64)(ctx[4])
 
+// argc is the number of parameters that the function takes
 #define CTX_PARMRET(ctx, argc) (u64)(ctx[argc])
 #define SYSCALL_PARMRET(ctx) CTX_PARMRET(ctx, 1)
 
@@ -68,6 +69,7 @@ typedef struct pt_regs ctx_t;
 #define CTX_PARM4(ctx) PT_REGS_PARM4(ctx)
 #define CTX_PARM5(ctx) PT_REGS_PARM5(ctx)
 
+// argc is the number of parameters that the function takes
 #define CTX_PARMRET(ctx, _argc) PT_REGS_RC(ctx)
 #define SYSCALL_PARMRET(ctx) CTX_PARMRET(ctx, _)
 

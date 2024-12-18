@@ -271,6 +271,7 @@ func runSystemProbe(ctxChan <-chan context.Context, errChan chan error) error {
 		fx.Supply(rcclient.Params{AgentName: "system-probe", AgentVersion: version.AgentVersion, IsSystemProbe: true}),
 		fx.Supply(optional.NewNoneOption[secrets.Component]()),
 		rcclientimpl.Module(),
+		fetchonlyimpl.Module(),
 		config.Module(),
 		telemetryimpl.Module(),
 		compstatsd.Module(),

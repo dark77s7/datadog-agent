@@ -15,7 +15,6 @@ import (
 	remotecfg "github.com/DataDog/datadog-agent/cmd/trace-agent/config/remote"
 	"github.com/DataDog/datadog-agent/comp/api/authtoken"
 	"github.com/DataDog/datadog-agent/comp/trace/config"
-	"github.com/DataDog/datadog-agent/pkg/api/security"
 	apiutil "github.com/DataDog/datadog-agent/pkg/api/util"
 	rc "github.com/DataDog/datadog-agent/pkg/config/remote/client"
 	pkgconfigsetup "github.com/DataDog/datadog-agent/pkg/config/setup"
@@ -160,5 +159,5 @@ func newConfigFetcher(at authtoken.Component) (rc.ConfigFetcher, error) {
 	}
 
 	// Auth tokens are handled by the rcClient
-	return rc.NewAgentGRPCConfigFetcher(ipcAddress, pkgconfigsetup.GetIPCPort(), func() (string, error) { return security.FetchAuthToken(pkgconfigsetup.Datadog()) }, apiutil.GetTLSClientConfig)
+	return rc.NewAgentGRPCConfigFetcher(ipcAddress, pkgconfigsetup.GetIPCPort(), at.Get, at.GetTLSClientConfig)
 }

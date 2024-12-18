@@ -34,7 +34,7 @@ func getGRPCClientConn(ctx context.Context, ipcAddress string, cmdPort string, t
 	}
 
 	cred := credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})
-	if tlsConfig := tlsConfigGetter(); tlsConfig.InsecureSkipVerify == false {
+	if tlsConfig := tlsConfigGetter(); !tlsConfig.InsecureSkipVerify {
 		cred = credentials.NewTLS(tlsConfig)
 	}
 

@@ -24,6 +24,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.uber.org/fx"
 
+	"github.com/DataDog/datadog-agent/comp/api/authtoken"
 	"github.com/DataDog/datadog-agent/comp/core/secrets"
 	tagger "github.com/DataDog/datadog-agent/comp/core/tagger/def"
 	"github.com/DataDog/datadog-agent/comp/dogstatsd/statsd"
@@ -68,6 +69,7 @@ type dependencies struct {
 	Statsd             statsd.Component
 	Tagger             tagger.Component
 	Compressor         compression.Component
+	At                 authtoken.Component
 }
 
 var _ traceagent.Component = (*component)(nil)
@@ -94,6 +96,7 @@ type component struct {
 	tagger             tagger.Component
 	telemetryCollector telemetry.TelemetryCollector
 	wg                 *sync.WaitGroup
+	at                 authtoken.Component
 }
 
 // NewAgent creates a new Agent component.
@@ -116,6 +119,7 @@ func NewAgent(deps dependencies) (traceagent.Component, error) {
 		telemetryCollector: deps.TelemetryCollector,
 		tagger:             deps.Tagger,
 		wg:                 &sync.WaitGroup{},
+		at:                 deps.At,
 	}
 	statsdCl, err := setupMetrics(deps.Statsd, c.config, c.telemetryCollector)
 	if err != nil {

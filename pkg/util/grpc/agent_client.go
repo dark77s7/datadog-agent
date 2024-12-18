@@ -33,7 +33,12 @@ func getGRPCClientConn(ctx context.Context, ipcAddress string, cmdPort string, t
 		return nil, errors.New("grpc client disabled via cmd_port: -1")
 	}
 
-	opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(tlsConfigGetter())))
+	cred := credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})
+	if tlsConfig := tlsConfigGetter(); tlsConfig.InsecureSkipVerify == false {
+		cred = credentials.NewTLS(tlsConfig)
+	}
+
+	opts = append(opts, grpc.WithTransportCredentials(cred))
 
 	target := net.JoinHostPort(ipcAddress, cmdPort)
 
@@ -64,8 +69,8 @@ func GetDDAgentClient(ctx context.Context, ipcAddress string, cmdPort string, tl
 
 // GetDDAgentSecureClient creates a pb.AgentSecureClient for IPC with the main agent via gRPC. This call is blocking by default, so
 // it is up to the caller to supply a context with appropriate timeout/cancel options
-func GetDDAgentSecureClient(ctx context.Context, ipcAddress string, cmdPort string, opts ...grpc.DialOption) (pb.AgentSecureClient, error) {
-	conn, err := getGRPCClientConn(ctx, ipcAddress, cmdPort, opts...)
+func GetDDAgentSecureClient(ctx context.Context, ipcAddress string, cmdPort string, tlsConfigGetter func() *tls.Config, opts ...grpc.DialOption) (pb.AgentSecureClient, error) {
+	conn, err := getGRPCClientConn(ctx, ipcAddress, cmdPort, tlsConfigGetter, opts...)
 	if err != nil {
 		return nil, err
 	}

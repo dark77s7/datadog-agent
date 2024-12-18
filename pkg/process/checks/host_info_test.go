@@ -7,6 +7,7 @@ package checks
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"os"
@@ -53,7 +54,7 @@ func TestGetHostnameFromGRPC(t *testing.T) {
 	).Return(&pb.HostnameReply{Hostname: "unit-test-hostname"}, nil)
 
 	t.Run("hostname returns from grpc", func(t *testing.T) {
-		hostname, err := getHostnameFromGRPC(ctx, func(_ context.Context, _, _ string, _ ...grpc.DialOption) (pb.AgentClient, error) {
+		hostname, err := getHostnameFromGRPC(ctx, func(_ context.Context, _, _ string, _ func() *tls.Config, _ ...grpc.DialOption) (pb.AgentClient, error) {
 			return mockClient, nil
 		}, pkgconfigsetup.DefaultGRPCConnectionTimeoutSecs*time.Second)
 
@@ -63,7 +64,7 @@ func TestGetHostnameFromGRPC(t *testing.T) {
 
 	t.Run("grpc client is unavailable", func(t *testing.T) {
 		grpcErr := errors.New("no grpc client")
-		hostname, err := getHostnameFromGRPC(ctx, func(_ context.Context, _, _ string, _ ...grpc.DialOption) (pb.AgentClient, error) {
+		hostname, err := getHostnameFromGRPC(ctx, func(_ context.Context, _, _ string, _ func() *tls.Config, _ ...grpc.DialOption) (pb.AgentClient, error) {
 			return nil, grpcErr
 		}, pkgconfigsetup.DefaultGRPCConnectionTimeoutSecs*time.Second)
 

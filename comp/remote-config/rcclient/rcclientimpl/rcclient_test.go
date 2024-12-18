@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/DataDog/datadog-agent/comp/api/authtoken"
+	"github.com/DataDog/datadog-agent/comp/api/authtoken/fetchonlyimpl"
 	"github.com/DataDog/datadog-agent/comp/core/config"
 	log "github.com/DataDog/datadog-agent/comp/core/log/def"
 	logmock "github.com/DataDog/datadog-agent/comp/core/log/mock"
@@ -16,7 +18,6 @@ import (
 	"github.com/DataDog/datadog-agent/comp/core/settings/settingsimpl"
 	"github.com/DataDog/datadog-agent/comp/core/sysprobeconfig"
 	"github.com/DataDog/datadog-agent/comp/remote-config/rcclient"
-	"github.com/DataDog/datadog-agent/pkg/api/security"
 	configmock "github.com/DataDog/datadog-agent/pkg/config/mock"
 	"github.com/DataDog/datadog-agent/pkg/config/model"
 	"github.com/DataDog/datadog-agent/pkg/config/remote/client"
@@ -69,6 +70,7 @@ func TestRCClientCreate(t *testing.T) {
 			fx.Provide(func() config.Component { return configmock.New(t) }),
 			settingsimpl.MockModule(),
 			sysprobeconfig.NoneModule(),
+			fetchonlyimpl.MockModule(),
 		),
 	)
 	// Missing params
@@ -87,6 +89,7 @@ func TestRCClientCreate(t *testing.T) {
 				},
 			),
 			settingsimpl.MockModule(),
+			fetchonlyimpl.MockModule(),
 		),
 	)
 	assert.NoError(t, err)
@@ -97,6 +100,8 @@ func TestRCClientCreate(t *testing.T) {
 func TestAgentConfigCallback(t *testing.T) {
 	pkglog.SetupLogger(pkglog.Default(), "info")
 	cfg := configmock.New(t)
+
+	var at authtoken.Component
 
 	rc := fxutil.Test[rcclient.Component](t,
 		fx.Options(
@@ -119,6 +124,8 @@ func TestAgentConfigCallback(t *testing.T) {
 				},
 			),
 			settingsimpl.Module(),
+			fetchonlyimpl.MockModule(),
+			fx.Populate(&at),
 		),
 	)
 
@@ -132,7 +139,10 @@ func TestAgentConfigCallback(t *testing.T) {
 	assert.NoError(t, err)
 
 	structRC.client, _ = client.NewUnverifiedGRPCClient(
-		ipcAddress, pkgconfigsetup.GetIPCPort(), func() (string, error) { return security.FetchAuthToken(cfg) },
+		ipcAddress,
+		pkgconfigsetup.GetIPCPort(),
+		at.Get,
+		at.GetTLSClientConfig,
 		client.WithAgent("test-agent", "9.99.9"),
 		client.WithProducts(state.ProductAgentConfig),
 		client.WithPollInterval(time.Hour),

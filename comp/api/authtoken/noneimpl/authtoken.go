@@ -25,6 +25,7 @@ type authToken struct {
 
 var _ authtoken.Component = (*authToken)(nil)
 
+// NewNoopAuthToken return a void implementation of the authtoken.Component
 func NewNoopAuthToken() authtoken.Component {
 	return &authToken{}
 }

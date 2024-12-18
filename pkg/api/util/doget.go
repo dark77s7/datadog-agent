@@ -38,11 +38,14 @@ func GetClient(verify bool) *http.Client {
 	return GetClientWithTimeout(0, verify)
 }
 
-type IPCRoundTripper struct {
+// ipcRoundTripper is an implementation of http.RoundTripper interface
+type ipcRoundTripper struct {
 	tr http.Transport
 }
 
-func (i *IPCRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+// RoundTrip implement the http.RoundTripper interface method to be used in http request context
+// It is used to lazy load the TLS Client config, in order to let the time to initialize it before using it
+func (i *ipcRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	if i.tr.TLSClientConfig == nil {
 		i.tr.TLSClientConfig = GetTLSClientConfig()
 	}
@@ -55,7 +58,7 @@ func (i *IPCRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 // verify the server TLS client (false should only be used on localhost
 // trusted endpoints).
 func GetClientWithTimeout(to time.Duration, _ bool) *http.Client {
-	transport := IPCRoundTripper{
+	transport := ipcRoundTripper{
 		tr: http.Transport{},
 	}
 

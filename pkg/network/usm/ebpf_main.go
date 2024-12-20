@@ -531,6 +531,14 @@ func (e *ebpfProgram) dumpMapsHandler(w io.Writer, _ *manager.Manager, mapName s
 	}
 }
 
+type ProtocolStats struct {
+	HTTP     map[http.Key]*http.RequestStats
+	HTTP2    map[http.Key]*http.RequestStats
+	Kafka    map[kafka.Key]*kafka.RequestStats
+	Postgres map[postgres.Key]*postgres.RequestStat
+	Redis    map[redis.Key]*redis.RequestStat
+}
+
 func (e *ebpfProgram) getProtocolStats() map[protocols.ProtocolType]interface{} {
 	ret := make(map[protocols.ProtocolType]interface{})
 

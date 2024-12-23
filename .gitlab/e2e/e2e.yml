@@ -25,7 +25,6 @@
 .k8s_e2e_template_needs_dev:
   extends: .k8s_e2e_template
   needs:
-    - dev_branch_multiarch-a6
     - dca_dev_branch
 
 .k8s_e2e_template_dev:

@@ -29,7 +29,7 @@ func TestMMapEvent(t *testing.T) {
 			ID:         "test_mmap",
 			Expression: `(mmap.protection & (VM_READ|VM_WRITE|VM_EXEC)) == (VM_READ|VM_WRITE|VM_EXEC) && process.file.name == "testsuite"`,
 			Every: &rules.HumanReadableDuration{
-				Duration: 10 * time.Millisecond,
+				Duration: 1 * time.Millisecond,
 			},
 		},
 	}
@@ -77,7 +77,7 @@ func TestMMapApproverZero(t *testing.T) {
 			ID:         "test_mmap",
 			Expression: `mmap.protection == 0 && process.file.name == "testsuite"`,
 			Every: &rules.HumanReadableDuration{
-				Duration: 10 * time.Millisecond,
+				Duration: 1 * time.Millisecond,
 			},
 		},
 	}

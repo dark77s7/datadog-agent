@@ -64,6 +64,8 @@ func (r *Resolver) ResolveFileFieldsPath(e *model.FileFields, pidCtx *model.PIDC
 		if _, err := r.mountResolver.IsMountIDValid(e.MountID); errors.Is(err, mount.ErrMountKernelID) {
 			return pathStr, "", origin, source, &ErrPathResolutionNotCritical{Err: fmt.Errorf("mount ID(%d) invalid: %w", e.MountID, err)}
 		}
+		fmt.Println("--------------------------- errResolution detected in ResolveMountPath e", e)
+
 		return pathStr, "", source, origin, &ErrPathResolution{Err: err}
 	}
 
@@ -72,6 +74,8 @@ func (r *Resolver) ResolveFileFieldsPath(e *model.FileFields, pidCtx *model.PIDC
 		if _, err := r.mountResolver.IsMountIDValid(e.MountID); errors.Is(err, mount.ErrMountKernelID) {
 			return pathStr, "", source, origin, &ErrPathResolutionNotCritical{Err: fmt.Errorf("mount ID(%d) invalid: %w", e.MountID, err)}
 		}
+		fmt.Println("--------------------------- errResolution detected in ResolveMountRoot e", e)
+
 		return pathStr, "", source, origin, &ErrPathResolution{Err: err}
 	}
 

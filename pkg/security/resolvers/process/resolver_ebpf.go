@@ -314,10 +314,11 @@ func (p *EBPFResolver) AddExecEntry(event *model.Event) error {
 
 	var err error
 	if err := p.ResolveNewProcessCacheEntry(event.ProcessCacheEntry, event.ContainerContext); err != nil {
-		fmt.Println("--------------------------- errResolution detected in AddExec", event)
 
 		var errResolution *spath.ErrPathResolution
 		if errors.As(err, &errResolution) {
+			fmt.Println("--------------------------- errResolution detected in AddExec", event)
+
 			event.SetPathResolutionError(&event.ProcessCacheEntry.FileEvent, err)
 		}
 	} else {

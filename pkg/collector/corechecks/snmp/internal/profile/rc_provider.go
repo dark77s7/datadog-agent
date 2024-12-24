@@ -58,7 +58,7 @@ func unpackRawConfigs(update map[string]state.RawConfig) (ProfileConfigMap, map[
 			errors[k] = err
 			continue
 		}
-		profiles[k] = ProfileConfig{
+		profiles[def.Profile.Name] = ProfileConfig{
 			DefinitionFile: "",
 			Definition:     def.Profile,
 			IsUserProfile:  true,

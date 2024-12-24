@@ -74,7 +74,7 @@ func TestMMapApproverZero(t *testing.T) {
 
 	ruleDefs := []*rules.RuleDefinition{
 		{
-			ID:         "test_mmap",
+			ID:         "test_mmap2",
 			Expression: `mmap.protection == 0 && process.file.name == "testsuite"`,
 			Every: &rules.HumanReadableDuration{
 				Duration: 1 * time.Millisecond,

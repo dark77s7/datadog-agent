@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shirou/gopsutil/v3/disk"
+	"github.com/shirou/gopsutil/v4/disk"
 	"github.com/stretchr/testify/assert"
 
 	"github.com/DataDog/datadog-agent/comp/core/autodiscovery/integration"
@@ -88,7 +88,7 @@ func TestIoStatsOverflow(t *testing.T) {
 	ioCheck.Configure(mock.GetSenderManager(), integration.FakeConfigHash, nil, nil, "test")
 	ioCheck.stats = lastStats
 	ioCheck.ts = 1000
-	ioCounters = func(names ...string) (map[string]disk.IOCountersStat, error) {
+	ioCounters = func(_ ...string) (map[string]disk.IOCountersStat, error) {
 		return currentStats, nil
 	}
 	swapMemory = SwapMemory

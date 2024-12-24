@@ -13,13 +13,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cihub/seelog"
 	assert "github.com/stretchr/testify/require"
 
-	"github.com/DataDog/datadog-agent/pkg/config"
-	"github.com/DataDog/datadog-agent/pkg/util/log"
-
+	pkgconfigsetup "github.com/DataDog/datadog-agent/pkg/config/setup"
 	"github.com/DataDog/datadog-agent/pkg/networkdevice/profile/profiledefinition"
+	"github.com/DataDog/datadog-agent/pkg/util/log"
 )
 
 func getMetricFromProfile(p profiledefinition.ProfileDefinition, metricName string) *profiledefinition.MetricsConfig {
@@ -33,7 +31,7 @@ func getMetricFromProfile(p profiledefinition.ProfileDefinition, metricName stri
 
 func Test_resolveProfileDefinitionPath(t *testing.T) {
 	defaultTestConfdPath, _ := filepath.Abs(filepath.Join("..", "test", "user_profiles.d"))
-	config.Datadog().SetWithoutSource("confd_path", defaultTestConfdPath)
+	pkgconfigsetup.Datadog().SetWithoutSource("confd_path", defaultTestConfdPath)
 
 	absPath, _ := filepath.Abs(filepath.Join("tmp", "myfile.yaml"))
 	tests := []struct {
@@ -49,17 +47,17 @@ func Test_resolveProfileDefinitionPath(t *testing.T) {
 		{
 			name:               "relative path with default profile",
 			definitionFilePath: "p2.yaml",
-			expectedPath:       filepath.Join(config.Datadog().Get("confd_path").(string), "snmp.d", "default_profiles", "p2.yaml"),
+			expectedPath:       filepath.Join(pkgconfigsetup.Datadog().Get("confd_path").(string), "snmp.d", "default_profiles", "p2.yaml"),
 		},
 		{
 			name:               "relative path with user profile",
 			definitionFilePath: "p3.yaml",
-			expectedPath:       filepath.Join(config.Datadog().Get("confd_path").(string), "snmp.d", "profiles", "p3.yaml"),
+			expectedPath:       filepath.Join(pkgconfigsetup.Datadog().Get("confd_path").(string), "snmp.d", "profiles", "p3.yaml"),
 		},
 		{
 			name:               "relative path with user profile precedence",
 			definitionFilePath: "p1.yaml",
-			expectedPath:       filepath.Join(config.Datadog().Get("confd_path").(string), "snmp.d", "profiles", "p1.yaml"),
+			expectedPath:       filepath.Join(pkgconfigsetup.Datadog().Get("confd_path").(string), "snmp.d", "profiles", "p1.yaml"),
 		},
 	}
 	for _, tt := range tests {
@@ -84,7 +82,7 @@ func Test_loadYamlProfiles(t *testing.T) {
 func Test_loadYamlProfiles_withUserProfiles(t *testing.T) {
 	defaultTestConfdPath, _ := filepath.Abs(filepath.Join("..", "test", "user_profiles.d"))
 	SetGlobalProfileConfigMap(nil)
-	config.Datadog().SetWithoutSource("confd_path", defaultTestConfdPath)
+	pkgconfigsetup.Datadog().SetWithoutSource("confd_path", defaultTestConfdPath)
 
 	defaultProfiles, err := loadYamlProfiles()
 	assert.Nil(t, err)
@@ -113,7 +111,7 @@ func Test_loadYamlProfiles_withUserProfiles(t *testing.T) {
 
 func Test_loadYamlProfiles_invalidDir(t *testing.T) {
 	invalidPath, _ := filepath.Abs(filepath.Join(".", "tmp", "invalidPath"))
-	config.Datadog().SetWithoutSource("confd_path", invalidPath)
+	pkgconfigsetup.Datadog().SetWithoutSource("confd_path", invalidPath)
 	SetGlobalProfileConfigMap(nil)
 
 	defaultProfiles, err := loadYamlProfiles()
@@ -124,12 +122,12 @@ func Test_loadYamlProfiles_invalidDir(t *testing.T) {
 func Test_loadYamlProfiles_invalidExtendProfile(t *testing.T) {
 	var b bytes.Buffer
 	w := bufio.NewWriter(&b)
-	l, err := seelog.LoggerFromWriterWithMinLevelAndFormat(w, seelog.DebugLvl, "[%LEVEL] %FuncShort: %Msg")
+	l, err := log.LoggerFromWriterWithMinLevelAndFormat(w, log.DebugLvl, "[%LEVEL] %FuncShort: %Msg")
 	assert.Nil(t, err)
 	log.SetupLogger(l, "debug")
 
 	profilesWithInvalidExtendConfdPath, _ := filepath.Abs(filepath.Join("..", "test", "invalid_ext.d"))
-	config.Datadog().SetWithoutSource("confd_path", profilesWithInvalidExtendConfdPath)
+	pkgconfigsetup.Datadog().SetWithoutSource("confd_path", profilesWithInvalidExtendConfdPath)
 	SetGlobalProfileConfigMap(nil)
 
 	defaultProfiles, err := loadYamlProfiles()
@@ -145,12 +143,12 @@ func Test_loadYamlProfiles_invalidExtendProfile(t *testing.T) {
 func Test_loadYamlProfiles_userAndDefaultProfileFolderDoesNotExist(t *testing.T) {
 	var b bytes.Buffer
 	w := bufio.NewWriter(&b)
-	l, err := seelog.LoggerFromWriterWithMinLevelAndFormat(w, seelog.DebugLvl, "[%LEVEL] %FuncShort: %Msg")
+	l, err := log.LoggerFromWriterWithMinLevelAndFormat(w, log.DebugLvl, "[%LEVEL] %FuncShort: %Msg")
 	assert.Nil(t, err)
 	log.SetupLogger(l, "debug")
 
 	profilesWithInvalidExtendConfdPath, _ := filepath.Abs(filepath.Join("..", "test", "does-not-exist.d"))
-	config.Datadog().SetWithoutSource("confd_path", profilesWithInvalidExtendConfdPath)
+	pkgconfigsetup.Datadog().SetWithoutSource("confd_path", profilesWithInvalidExtendConfdPath)
 	SetGlobalProfileConfigMap(nil)
 
 	defaultProfiles, err := loadYamlProfiles()
@@ -168,12 +166,12 @@ func Test_loadYamlProfiles_validAndInvalidProfiles(t *testing.T) {
 	// Valid profiles should be returned even if some profiles are invalid
 	var b bytes.Buffer
 	w := bufio.NewWriter(&b)
-	l, err := seelog.LoggerFromWriterWithMinLevelAndFormat(w, seelog.DebugLvl, "[%LEVEL] %FuncShort: %Msg")
+	l, err := log.LoggerFromWriterWithMinLevelAndFormat(w, log.DebugLvl, "[%LEVEL] %FuncShort: %Msg")
 	assert.Nil(t, err)
 	log.SetupLogger(l, "debug")
 
 	profilesWithInvalidExtendConfdPath, _ := filepath.Abs(filepath.Join("..", "test", "valid_invalid.d"))
-	config.Datadog().SetWithoutSource("confd_path", profilesWithInvalidExtendConfdPath)
+	pkgconfigsetup.Datadog().SetWithoutSource("confd_path", profilesWithInvalidExtendConfdPath)
 	SetGlobalProfileConfigMap(nil)
 
 	defaultProfiles, err := loadYamlProfiles()

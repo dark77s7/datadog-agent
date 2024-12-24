@@ -6,24 +6,29 @@
 #include "helpers/syscalls.h"
 
 HOOK_SYSCALL_ENTRY2(kill, int, pid, int, type) {
-    struct policy_t policy = fetch_policy(EVENT_SIGNAL);
-    if (is_discarded_by_process(policy.mode, EVENT_SIGNAL)) {
+    if (is_discarded_by_pid()) {
         return 0;
     }
 
-    /* TODO: implement the event for pid equal to 0 or -1. */
-    if (pid < 1) {
-        return 0;
-    }
-
-    /* cache the signal and wait to grab the retval to send it */
     struct syscall_cache_t syscall = {
         .type = EVENT_SIGNAL,
         .signal = {
-            .pid = 0, // 0 in case the root ns pid resolution failed
             .type = type,
         },
     };
+
+    if (pid < 1) {
+        /*
+          in case kill is called with pid 0 or -1 and targets multiple processes, it
+          may not go through the kill_permission callpath; but still is valuable to track
+        */
+        syscall.signal.need_target_resolution = 0;
+        syscall.signal.pid = pid;
+    } else {
+        syscall.signal.need_target_resolution = 1;
+        syscall.signal.pid = 0; // it will be resolved later on by check_kill_permission
+    }
+
     cache_syscall(&syscall);
     return 0;
 }
@@ -31,7 +36,7 @@ HOOK_SYSCALL_ENTRY2(kill, int, pid, int, type) {
 HOOK_ENTRY("check_kill_permission")
 int hook_check_kill_permission(ctx_t *ctx) {
     struct syscall_cache_t *syscall = peek_syscall(EVENT_SIGNAL);
-    if (!syscall) {
+    if (!syscall || syscall->signal.need_target_resolution == 0) {
         return 0;
     }
 

@@ -19,7 +19,7 @@ import (
 
 	"github.com/DataDog/datadog-agent/test/new-e2e/pkg/e2e"
 	"github.com/DataDog/datadog-agent/test/new-e2e/pkg/environments"
-	awshost "github.com/DataDog/datadog-agent/test/new-e2e/pkg/environments/aws/host"
+	awshost "github.com/DataDog/datadog-agent/test/new-e2e/pkg/provisioners/aws/host"
 	"github.com/DataDog/datadog-agent/test/new-e2e/pkg/utils/e2e/client"
 	"github.com/DataDog/datadog-agent/test/new-e2e/tests/agent-platform/common"
 	filemanager "github.com/DataDog/datadog-agent/test/new-e2e/tests/agent-platform/common/file-manager"
@@ -138,7 +138,7 @@ func (is *rpmTestSuite) TestRpm() {
 	_, err = fileManager.WriteFile("/etc/yum.repos.d/datadog.repo", []byte(fileContent))
 	require.NoError(is.T(), err)
 
-	is.T().Run("install the RPM package", func(t *testing.T) {
+	is.T().Run("install the RPM package", func(*testing.T) {
 		VMclient.Host.MustExecute("sudo yum makecache -y")
 		_, err := VMclient.Host.Execute("sudo yum install -y datadog-agent")
 

@@ -5,9 +5,26 @@
 #include "helpers/discarders.h"
 #include "helpers/syscalls.h"
 
+// list of requests we don't want to rate limit
+const int important_reqs[] = {
+    PTRACE_ATTACH,
+    PTRACE_DETACH,
+    PTRACE_TRACEME,
+    PTRACE_SEIZE,
+    PTRACE_KILL,
+    PTRACE_SETOPTIONS,
+};
+
 HOOK_SYSCALL_ENTRY3(ptrace, u32, request, pid_t, pid, void *, addr) {
-    struct policy_t policy = fetch_policy(EVENT_PTRACE);
-    if (is_discarded_by_process(policy.mode, EVENT_PTRACE)) {
+    u8 found = 0;
+    for (int i = 0; i < sizeof(important_reqs) / sizeof(int); i++) {
+        if (request == important_reqs[i]) {
+            found = 1;
+            break;
+        }
+    }
+    if (!found && !rate_limiter_allow_simple()) {
+        // for other requests types than a define list, rate limit the events
         return 0;
     }
 
@@ -16,6 +33,7 @@ HOOK_SYSCALL_ENTRY3(ptrace, u32, request, pid_t, pid, void *, addr) {
         .ptrace = {
             .request = request,
             .pid = 0, // 0 in case the root ns pid resolution failed
+            .ns_pid = (u32)pid,
             .addr = (u64)addr,
         }
     };
@@ -64,6 +82,7 @@ int __attribute__((always_inline)) sys_ptrace_ret(void *ctx, int retval) {
         .request = syscall->ptrace.request,
         .pid = syscall->ptrace.pid,
         .addr = syscall->ptrace.addr,
+        .ns_pid = syscall->ptrace.ns_pid,
     };
 
     struct proc_cache_t *entry = fill_process_context(&event.process);

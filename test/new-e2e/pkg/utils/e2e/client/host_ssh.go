@@ -7,9 +7,11 @@ package client
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path"
+	"strings"
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
@@ -23,6 +25,23 @@ func execute(sshClient *ssh.Client, command string) (string, error) {
 	}
 	stdout, err := session.CombinedOutput(command)
 	return string(stdout), err
+}
+
+func start(sshClient *ssh.Client, command string) (*ssh.Session, io.WriteCloser, io.Reader, error) {
+	session, err := sshClient.NewSession()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to create session: %v", err)
+	}
+	stdin, err := session.StdinPipe()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to create stdin pipe: %v", err)
+	}
+	stdout, err := session.StdoutPipe()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to create stdout pipe: %v", err)
+	}
+	err = session.Start(command)
+	return session, stdin, stdout, err
 }
 
 func getSSHClient(user, host string, privateKey, privateKeyPassphrase []byte) (*ssh.Client, error) {
@@ -77,12 +96,16 @@ func getSSHClient(user, host string, privateKey, privateKeyPassphrase []byte) (*
 	return client, nil
 }
 
-func copyFile(sftpClient *sftp.Client, src string, dst string) error {
-	srcFile, err := os.Open(src)
-	if err != nil {
-		return err
+func copyFileFromIoReader(sftpClient *sftp.Client, srcFile io.Reader, dst string) error {
+	lastSlashIdx := strings.LastIndex(dst, "/")
+	if lastSlashIdx >= 0 {
+		// Ensure the target directory exists
+		// otherwise sftpClient.Create will return an error
+		err := sftpClient.MkdirAll(dst[:lastSlashIdx])
+		if err != nil {
+			return err
+		}
 	}
-	defer srcFile.Close()
 
 	dstFile, err := sftpClient.Create(dst)
 	if err != nil {
@@ -94,6 +117,15 @@ func copyFile(sftpClient *sftp.Client, src string, dst string) error {
 		return err
 	}
 	return nil
+}
+
+func copyFile(sftpClient *sftp.Client, src string, dst string) error {
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer srcFile.Close()
+	return copyFileFromIoReader(sftpClient, srcFile, dst)
 }
 
 func copyFolder(sftpClient *sftp.Client, srcFolder string, dstFolder string) error {

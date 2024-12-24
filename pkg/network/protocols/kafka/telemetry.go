@@ -18,6 +18,8 @@ type Telemetry struct {
 
 	produceHits, fetchHits *apiVersionCounter
 	dropped                *libtelemetry.Counter // this happens when KafkaStatKeeper reaches capacity
+
+	invalidLatency *libtelemetry.Counter
 }
 
 // NewTelemetry creates a new Telemetry
@@ -25,10 +27,11 @@ func NewTelemetry() *Telemetry {
 	metricGroup := libtelemetry.NewMetricGroup("usm.kafka")
 
 	return &Telemetry{
-		metricGroup: metricGroup,
-		produceHits: newAPIVersionCounter(metricGroup, "total_hits", "operation:produce", libtelemetry.OptStatsd),
-		fetchHits:   newAPIVersionCounter(metricGroup, "total_hits", "operation:fetch", libtelemetry.OptStatsd),
-		dropped:     metricGroup.NewCounter("dropped", libtelemetry.OptStatsd),
+		metricGroup:    metricGroup,
+		produceHits:    newAPIVersionCounter(metricGroup, "total_hits", "operation:produce", libtelemetry.OptStatsd),
+		fetchHits:      newAPIVersionCounter(metricGroup, "total_hits", "operation:fetch", libtelemetry.OptStatsd),
+		dropped:        metricGroup.NewCounter("dropped", libtelemetry.OptStatsd),
+		invalidLatency: metricGroup.NewCounter("malformed", "type:invalid-latency", libtelemetry.OptStatsd),
 	}
 }
 
@@ -46,5 +49,7 @@ func (t *Telemetry) Count(tx *KafkaTransaction) {
 
 // Log logs the kafka stats summary
 func (t *Telemetry) Log() {
-	log.Debugf("kafka stats summary: %s", t.metricGroup.Summary())
+	if log.ShouldLog(log.DebugLvl) {
+		log.Debugf("kafka stats summary: %s", t.metricGroup.Summary())
+	}
 }

@@ -14,9 +14,29 @@ import (
 	"github.com/DataDog/datadog-agent/comp/core/tagger/utils"
 )
 
+// ApplyFunc is a generic function applied to an object of type V
+type ApplyFunc[V any] func(EntityID, V)
+
+// ObjectStore is a generic interface used as a key-value store in different tagstore implementations
+// The key is of type EntityID
+type ObjectStore[V any] interface {
+	// Get returns an object with the specified entity ID if it exists in the store
+	Get(EntityID) (V, bool)
+	// Set sets a given entityID to a given object in the store
+	Set(EntityID, V)
+	// Unset unsets a given entityID in the store
+	Unset(EntityID)
+	// Size returns the total number of objects in the store
+	Size() int
+	// ListObjects returns a slice containing objects of the store matching the filter
+	ListObjects(*Filter) []V
+	// ForEach applies a given function to each object in the store matching the filter
+	ForEach(*Filter, ApplyFunc[V])
+}
+
 // TaggerListResponse holds the tagger list response
 type TaggerListResponse struct {
-	Entities map[string]TaggerListEntity `json:"entities"`
+	Entities map[string]TaggerListEntity
 }
 
 // TaggerListEntity holds the tagging info about an entity
@@ -28,7 +48,7 @@ type TaggerListEntity struct {
 // to be created from collectors and read by the store.
 type TagInfo struct {
 	Source               string    // source collector's name
-	Entity               string    // entity name ready for lookup
+	EntityID             EntityID  // entity id for lookup
 	HighCardTags         []string  // high cardinality tags that can create a lot of different timeseries (typically one per container, user request, etc.)
 	OrchestratorCardTags []string  // orchestrator cardinality tags that have as many combination as pods/tasks
 	LowCardTags          []string  // low cardinality tags safe for every pipeline
@@ -58,11 +78,12 @@ const (
 	LowCardinality TagCardinality = iota
 	OrchestratorCardinality
 	HighCardinality
+	NoneCardinality
 )
 
 // Entity is an entity ID + tags.
 type Entity struct {
-	ID                          string
+	ID                          EntityID
 	HighCardinalityTags         []string
 	OrchestratorCardinalityTags []string
 	LowCardinalityTags          []string
@@ -72,6 +93,10 @@ type Entity struct {
 // GetTags flattens all tags from all cardinalities into a single slice of tag
 // strings.
 func (e Entity) GetTags(cardinality TagCardinality) []string {
+	if cardinality == NoneCardinality {
+		return []string{}
+	}
+
 	tagArrays := make([][]string, 0, 3)
 	tagArrays = append(tagArrays, e.LowCardinalityTags)
 
@@ -97,6 +122,11 @@ func (e Entity) Copy(cardinality TagCardinality) Entity {
 	case LowCardinality:
 		newEntity.HighCardinalityTags = nil
 		newEntity.OrchestratorCardinalityTags = nil
+	case NoneCardinality:
+		newEntity.HighCardinalityTags = nil
+		newEntity.OrchestratorCardinalityTags = nil
+		newEntity.LowCardinalityTags = nil
+		newEntity.StandardTags = nil
 	}
 
 	return newEntity
@@ -111,6 +141,8 @@ const (
 	ShortOrchestratorCardinalityString = "orch"
 	// HighCardinalityString is the string representation of the high cardinality
 	HighCardinalityString = "high"
+	// NoneCardinalityString is the string representation of the none cardinality
+	NoneCardinalityString = "none"
 	// UnknownCardinalityString represents an unknown level of cardinality
 	UnknownCardinalityString = "unknown"
 )
@@ -125,6 +157,8 @@ func StringToTagCardinality(c string) (TagCardinality, error) {
 		return OrchestratorCardinality, nil
 	case LowCardinalityString:
 		return LowCardinality, nil
+	case NoneCardinalityString:
+		return NoneCardinality, nil
 	default:
 		return LowCardinality, fmt.Errorf("unsupported value %s received for tag cardinality", c)
 	}
@@ -140,6 +174,8 @@ func TagCardinalityToString(c TagCardinality) string {
 		return OrchestratorCardinalityString
 	case LowCardinality:
 		return LowCardinalityString
+	case NoneCardinality:
+		return NoneCardinalityString
 	default:
 		return UnknownCardinalityString
 	}
@@ -163,4 +199,27 @@ const (
 type EntityEvent struct {
 	EventType EventType
 	Entity    Entity
+}
+
+// EntityIDPrefix represents the prefix of a TagEntity id
+type EntityIDPrefix string
+
+// ToUID builds a unique id from the passed id
+// if the passed id is empty, an empty string is returned
+// else it returns `{entityPrefix}://{id}`
+func (e EntityIDPrefix) ToUID(id string) string {
+	if id == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s://%s", e, id)
+}
+
+// Subscription can be used by external subscribing components to interact with tagger events
+type Subscription interface {
+	// EventsChan returns a channel on which the subscriber can receive tagger events
+	EventsChan() chan []EntityEvent
+	// ID returns the id of the subscription
+	ID() string
+	// Unsubscribe is used cancel subscription to the tagger
+	Unsubscribe()
 }

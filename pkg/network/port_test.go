@@ -17,7 +17,6 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/cihub/seelog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vishvananda/netns"
@@ -32,7 +31,7 @@ func TestMain(m *testing.M) {
 	if logLevel == "" {
 		logLevel = "warn"
 	}
-	log.SetupLogger(seelog.Default, logLevel)
+	log.SetupLogger(log.Default(), logLevel)
 
 	os.Exit(m.Run())
 }
@@ -89,16 +88,16 @@ func runServerProcess(t *testing.T, proto string, port uint16, ns netns.NsHandle
 	return port, proc
 }
 
-func TestReadInitialState(t *testing.T) {
+func TestReadListeningPorts(t *testing.T) {
 	t.Run("TCP", func(t *testing.T) {
-		testReadInitialState(t, "tcp")
+		testReadListeningPorts(t, "tcp")
 	})
 	t.Run("UDP", func(t *testing.T) {
-		testReadInitialState(t, "udp")
+		testReadListeningPorts(t, "udp")
 	})
 }
 
-func testReadInitialState(t *testing.T, proto string) {
+func testReadListeningPorts(t *testing.T, proto string) {
 	var ns, rootNs netns.NsHandle
 	var err error
 	nsName := netlinktestutil.AddNS(t)
@@ -159,7 +158,7 @@ func testReadInitialState(t *testing.T, proto string) {
 		connType, otherConnType = otherConnType, connType
 	}
 
-	initialPorts, err := ReadInitialState("/proc", connType, true)
+	initialPorts, err := ReadListeningPorts("/proc", connType, true)
 	if !assert.NoError(t, err) {
 		return
 	}

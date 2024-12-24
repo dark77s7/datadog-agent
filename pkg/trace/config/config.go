@@ -17,6 +17,7 @@ import (
 
 	"github.com/DataDog/opentelemetry-mapping-go/pkg/otlp/attributes"
 
+	"github.com/DataDog/datadog-agent/comp/core/tagger/origindetection"
 	"github.com/DataDog/datadog-agent/pkg/obfuscate"
 	"github.com/DataDog/datadog-agent/pkg/remoteconfig/state"
 	"github.com/DataDog/datadog-agent/pkg/trace/log"
@@ -115,6 +116,16 @@ type ObfuscationConfig struct {
 
 	// CreditCards holds the configuration for obfuscating credit cards.
 	CreditCards obfuscate.CreditCardsConfig `mapstructure:"credit_cards"`
+
+	// Cache holds the configuration for caching obfuscation results.
+	Cache obfuscate.CacheConfig `mapstructure:"cache"`
+}
+
+func obfuscationMode(enabled bool) obfuscate.ObfuscationMode {
+	if enabled {
+		return obfuscate.ObfuscateOnly
+	}
+	return ""
 }
 
 // Export returns an obfuscate.Config matching o.
@@ -125,7 +136,7 @@ func (o *ObfuscationConfig) Export(conf *AgentConfig) obfuscate.Config {
 			ReplaceDigits:    conf.HasFeature("quantize_sql_tables") || conf.HasFeature("replace_sql_digits"),
 			KeepSQLAlias:     conf.HasFeature("keep_sql_alias"),
 			DollarQuotedFunc: conf.HasFeature("dollar_quoted_func"),
-			Cache:            conf.HasFeature("sql_cache"),
+			ObfuscationMode:  obfuscationMode(conf.HasFeature("sqllexer")),
 		},
 		ES:                   o.ES,
 		OpenSearch:           o.OpenSearch,
@@ -137,6 +148,7 @@ func (o *ObfuscationConfig) Export(conf *AgentConfig) obfuscate.Config {
 		Memcached:            o.Memcached,
 		CreditCard:           o.CreditCards,
 		Logger:               new(debugLogger),
+		Cache:                o.Cache,
 	}
 }
 
@@ -287,7 +299,6 @@ type AgentConfig struct {
 	// Concentrator
 	BucketInterval         time.Duration // the size of our pre-aggregation per bucket
 	ExtraAggregators       []string      // DEPRECATED
-	PeerServiceAggregation bool          // TO BE DEPRECATED - enables/disables stats aggregation for peer.service, used by Concentrator and ClientStatsAggregator
 	PeerTagsAggregation    bool          // enables/disables stats aggregation for peer entity tags, used by Concentrator and ClientStatsAggregator
 	ComputeStatsBySpanKind bool          // enables/disables the computing of stats based on a span's `span.kind` field
 	PeerTags               []string      // additional tags to use for peer entity stats aggregation
@@ -309,6 +320,9 @@ type AgentConfig struct {
 	ProbabilisticSamplerEnabled            bool
 	ProbabilisticSamplerHashSeed           uint32
 	ProbabilisticSamplerSamplingPercentage float32
+
+	// Error Tracking Standalone
+	ErrorTrackingStandalone bool
 
 	// Receiver
 	ReceiverEnabled bool // specifies whether Receiver listeners are enabled. Unless OTLPReceiver is used, this should always be true.
@@ -432,6 +446,9 @@ type AgentConfig struct {
 	// ContainerTags ...
 	ContainerTags func(cid string) ([]string, error) `json:"-"`
 
+	// ContainerIDFromOriginInfo ...
+	ContainerIDFromOriginInfo func(originInfo origindetection.OriginInfo) (string, error) `json:"-"`
+
 	// ContainerProcRoot is the root dir for `proc` info
 	ContainerProcRoot string
 
@@ -443,6 +460,14 @@ type AgentConfig struct {
 
 	// Lambda function name
 	LambdaFunctionName string
+
+	// Azure container apps tags, in the form of a comma-separated list of
+	// key-value pairs, starting with a comma
+	AzureContainerAppTags string
+
+	// GetAgentAuthToken retrieves an auth token to communicate with other agent processes
+	// Function will be nil if in an environment without an auth token
+	GetAgentAuthToken func() string `json:"-"`
 }
 
 // RemoteClient client is used to APM Sampling Updates from a remote source.
@@ -488,6 +513,8 @@ func New() *AgentConfig {
 		RareSamplerCooldownPeriod: 5 * time.Minute,
 		RareSamplerCardinality:    200,
 
+		ErrorTrackingStandalone: false,
+
 		ReceiverEnabled:        true,
 		ReceiverHost:           "localhost",
 		ReceiverPort:           8126,
@@ -530,7 +557,9 @@ func New() *AgentConfig {
 			MaxPayloadSize: 5 * 1024 * 1024,
 		},
 
-		Features: make(map[string]struct{}),
+		Features:               make(map[string]struct{}),
+		PeerTagsAggregation:    true,
+		ComputeStatsBySpanKind: true,
 	}
 }
 
@@ -554,6 +583,14 @@ func (c *AgentConfig) APIKey() string {
 		return ""
 	}
 	return c.Endpoints[0].APIKey
+}
+
+// UpdateAPIKey updates the API Key associated with the main endpoint.
+func (c *AgentConfig) UpdateAPIKey(val string) {
+	if len(c.Endpoints) == 0 {
+		return
+	}
+	c.Endpoints[0].APIKey = val
 }
 
 // NewHTTPClient returns a new http.Client to be used for outgoing connections to the
@@ -604,6 +641,15 @@ func (c *AgentConfig) AllFeatures() []string {
 		feats = append(feats, feat)
 	}
 	return feats
+}
+
+// ConfiguredPeerTags returns the set of peer tags that should be used
+// for aggregation based on the various config values and the base set of tags.
+func (c *AgentConfig) ConfiguredPeerTags() []string {
+	if !c.PeerTagsAggregation {
+		return nil
+	}
+	return preparePeerTags(append(basePeerTags, c.PeerTags...))
 }
 
 func inAzureAppServices() bool {

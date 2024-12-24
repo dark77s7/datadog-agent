@@ -8,6 +8,7 @@ package listenerimpl
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"net"
@@ -79,10 +80,10 @@ func newTrapListener(lc fx.Lifecycle, dep dependencies) (listener.Component, err
 	gosnmpListener.OnNewTrap = trapListener.receiveTrap
 	if config.Enabled {
 		lc.Append(fx.Hook{
-			OnStart: func(ctx context.Context) error {
+			OnStart: func(_ context.Context) error {
 				return trapListener.start()
 			},
-			OnStop: func(ctx context.Context) error {
+			OnStop: func(_ context.Context) error {
 				return trapListener.stop()
 			},
 		})
@@ -167,7 +168,8 @@ func validatePacket(p *gosnmp.SnmpPacket, c *config.TrapsConfig) error {
 
 	// At least one of the known community strings must match.
 	for _, community := range c.CommunityStrings {
-		if community == p.Community {
+		// Simple string equality check, but in constant time to avoid timing attacks
+		if subtle.ConstantTimeCompare([]byte(community), []byte(p.Community)) == 1 {
 			return nil
 		}
 	}

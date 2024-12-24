@@ -10,7 +10,7 @@ import (
 	"regexp"
 	"testing"
 
-	"github.com/shirou/gopsutil/v3/disk"
+	"github.com/shirou/gopsutil/v4/disk"
 
 	"github.com/DataDog/datadog-agent/comp/core/autodiscovery/integration"
 	"github.com/DataDog/datadog-agent/pkg/aggregator/mocksender"
@@ -78,7 +78,7 @@ var (
 )
 
 //nolint:revive // TODO(PLINT) Fix revive linter
-func diskSampler(all bool) ([]disk.PartitionStat, error) {
+func diskSampler(_ bool) ([]disk.PartitionStat, error) {
 	return diskSamples, nil
 }
 
@@ -87,7 +87,7 @@ func diskUsageSampler(mountpoint string) (*disk.UsageStat, error) {
 }
 
 //nolint:revive // TODO(PLINT) Fix revive linter
-func diskIoSampler(names ...string) (map[string]disk.IOCountersStat, error) {
+func diskIoSampler(_ ...string) (map[string]disk.IOCountersStat, error) {
 	return diskIoSamples, nil
 }
 

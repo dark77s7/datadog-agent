@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/DataDog/datadog-agent/test/new-e2e/pkg/e2e"
-	awshost "github.com/DataDog/datadog-agent/test/new-e2e/pkg/environments/aws/host"
+	awshost "github.com/DataDog/datadog-agent/test/new-e2e/pkg/provisioners/aws/host"
 	svcmanager "github.com/DataDog/datadog-agent/test/new-e2e/tests/agent-platform/common/svc-manager"
 )
 
@@ -50,8 +50,10 @@ func (v *linuxDiagnoseSuite) TestDiagnoseLocalFallback() {
 
 func (v *linuxDiagnoseSuite) TestDiagnoseInclude() {
 	v.AssertDiagnoseInclude()
+	v.AssertDiagnoseJSONInclude()
 }
 
 func (v *linuxDiagnoseSuite) TestDiagnoseExclude() {
-	v.AssertDiagnoseInclude()
+	v.AssertDiagnoseExclude()
+	v.AssertDiagnoseJSONExclude()
 }

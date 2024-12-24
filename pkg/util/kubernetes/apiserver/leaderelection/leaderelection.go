@@ -16,16 +16,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/DataDog/datadog-agent/comp/core/telemetry/telemetryimpl"
-	configmaplock "github.com/DataDog/datadog-agent/internal/third_party/client-go/tools/leaderelection/resourcelock"
-	"github.com/DataDog/datadog-agent/pkg/config"
-	"github.com/DataDog/datadog-agent/pkg/telemetry"
-	"github.com/DataDog/datadog-agent/pkg/util/cache"
-	"github.com/DataDog/datadog-agent/pkg/util/kubernetes/apiserver"
-	"github.com/DataDog/datadog-agent/pkg/util/kubernetes/apiserver/common"
-	"github.com/DataDog/datadog-agent/pkg/util/kubernetes/apiserver/leaderelection/metrics"
-	"github.com/DataDog/datadog-agent/pkg/util/log"
-	"github.com/DataDog/datadog-agent/pkg/util/retry"
 	"golang.org/x/mod/semver"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -34,6 +24,17 @@ import (
 	corev1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/tools/leaderelection"
 	rl "k8s.io/client-go/tools/leaderelection/resourcelock"
+
+	"github.com/DataDog/datadog-agent/comp/core/telemetry/telemetryimpl"
+	configmaplock "github.com/DataDog/datadog-agent/internal/third_party/client-go/tools/leaderelection/resourcelock"
+	pkgconfigsetup "github.com/DataDog/datadog-agent/pkg/config/setup"
+	"github.com/DataDog/datadog-agent/pkg/telemetry"
+	"github.com/DataDog/datadog-agent/pkg/util/cache"
+	"github.com/DataDog/datadog-agent/pkg/util/kubernetes/apiserver"
+	"github.com/DataDog/datadog-agent/pkg/util/kubernetes/apiserver/common"
+	"github.com/DataDog/datadog-agent/pkg/util/kubernetes/apiserver/leaderelection/metrics"
+	"github.com/DataDog/datadog-agent/pkg/util/log"
+	"github.com/DataDog/datadog-agent/pkg/util/retry"
 )
 
 const (
@@ -75,9 +76,9 @@ type LeaderEngine struct {
 func newLeaderEngine(ctx context.Context) *LeaderEngine {
 	return &LeaderEngine{
 		ctx:             ctx,
-		LeaseName:       config.Datadog().GetString("leader_lease_name"),
+		LeaseName:       pkgconfigsetup.Datadog().GetString("leader_lease_name"),
 		LeaderNamespace: common.GetResourcesNamespace(),
-		ServiceName:     config.Datadog().GetString("cluster_agent.kubernetes_service_name"),
+		ServiceName:     pkgconfigsetup.Datadog().GetString("cluster_agent.kubernetes_service_name"),
 		leaderMetric:    metrics.NewLeaderMetric(),
 		subscribers:     []chan struct{}{},
 		LeaseDuration:   defaultLeaderLeaseDuration,
@@ -139,7 +140,7 @@ func (le *LeaderEngine) init() error {
 	}
 	log.Debugf("Init LeaderEngine with HolderIdentity: %q", le.HolderIdentity)
 
-	leaseDuration := config.Datadog().GetInt("leader_lease_duration")
+	leaseDuration := pkgconfigsetup.Datadog().GetInt("leader_lease_duration")
 	if leaseDuration > 0 {
 		le.LeaseDuration = time.Duration(leaseDuration) * time.Second
 	} else {
@@ -227,9 +228,15 @@ func (le *LeaderEngine) EnsureLeaderElectionRuns() error {
 
 func (le *LeaderEngine) runLeaderElection() {
 	for {
-		log.Infof("Starting leader election process for %q...", le.HolderIdentity)
-		le.leaderElector.Run(le.ctx)
-		log.Info("Leader election lost")
+		select {
+		case <-le.ctx.Done():
+			log.Infof("Quitting leader election process: context was cancelled")
+			return
+		default:
+			log.Infof("Starting leader election process for %q...", le.HolderIdentity)
+			le.leaderElector.Run(le.ctx)
+			log.Info("Leader election lost")
+		}
 	}
 }
 
@@ -274,17 +281,23 @@ func (le *LeaderEngine) IsLeader() bool {
 	return le.GetLeader() == le.HolderIdentity
 }
 
-// Subscribe allows any component to receive a notification
-// when the current process becomes leader.
+// Subscribe allows any component to receive a notification when leadership state of the current
+// process changes.
+//
+// The subscriber will not be notified about the leadership state change if the previous notification
+// hasn't yet been consumed from the notification channel.
+//
 // Calling Subscribe is optional, use IsLeader if the client doesn't need an event-based approach.
-func (le *LeaderEngine) Subscribe() <-chan struct{} {
-	c := make(chan struct{}, 5) // buffered channel to avoid blocking in case of stuck subscriber
+func (le *LeaderEngine) Subscribe() (leadershipChangeNotif <-chan struct{}, isLeader func() bool) {
+	c := make(chan struct{}, 1)
 
 	le.m.Lock()
 	le.subscribers = append(le.subscribers, c)
 	le.m.Unlock()
 
-	return c
+	leadershipChangeNotif = c
+	isLeader = le.IsLeader
+	return
 }
 
 func detectLeases(client discovery.DiscoveryInterface) (bool, error) {
@@ -307,7 +320,7 @@ func detectLeases(client discovery.DiscoveryInterface) (bool, error) {
 // CanUseLeases returns if leases can be used for leader election. If the resource is defined in the config
 // It uses it. Otherwise it uses the discovery client for leader election.
 func CanUseLeases(client discovery.DiscoveryInterface) (bool, error) {
-	resourceType := config.Datadog().GetString("leader_election_default_resource")
+	resourceType := pkgconfigsetup.Datadog().GetString("leader_election_default_resource")
 	if resourceType == "lease" || resourceType == "leases" {
 		return true, nil
 	} else if resourceType == "configmap" || resourceType == "configmaps" {
@@ -323,7 +336,7 @@ func CanUseLeases(client discovery.DiscoveryInterface) (bool, error) {
 
 func getLeaseLeaderElectionRecord(client coordinationv1.CoordinationV1Interface) (rl.LeaderElectionRecord, error) {
 	var empty rl.LeaderElectionRecord
-	lease, err := client.Leases(common.GetResourcesNamespace()).Get(context.TODO(), config.Datadog().GetString("leader_lease_name"), metav1.GetOptions{})
+	lease, err := client.Leases(common.GetResourcesNamespace()).Get(context.TODO(), pkgconfigsetup.Datadog().GetString("leader_lease_name"), metav1.GetOptions{})
 	if err != nil {
 		return empty, err
 	}
@@ -334,7 +347,7 @@ func getLeaseLeaderElectionRecord(client coordinationv1.CoordinationV1Interface)
 
 func getConfigMapLeaderElectionRecord(client corev1.CoreV1Interface) (rl.LeaderElectionRecord, error) {
 	var led rl.LeaderElectionRecord
-	leaderElectionCM, err := client.ConfigMaps(common.GetResourcesNamespace()).Get(context.TODO(), config.Datadog().GetString("leader_lease_name"), metav1.GetOptions{})
+	leaderElectionCM, err := client.ConfigMaps(common.GetResourcesNamespace()).Get(context.TODO(), pkgconfigsetup.Datadog().GetString("leader_lease_name"), metav1.GetOptions{})
 	if err != nil {
 		return led, err
 	}

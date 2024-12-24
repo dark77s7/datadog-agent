@@ -19,6 +19,8 @@ import (
 var mainProbes = []probes.ProbeFuncName{
 	probes.NetDevQueue,
 	probes.ProtocolClassifierEntrySocketFilter,
+	probes.ProtocolClassifierTLSClientSocketFilter,
+	probes.ProtocolClassifierTLSServerSocketFilter,
 	probes.ProtocolClassifierQueuesSocketFilter,
 	probes.ProtocolClassifierDBsSocketFilter,
 	probes.ProtocolClassifierGRPCSocketFilter,
@@ -61,12 +63,11 @@ var mainProbes = []probes.ProbeFuncName{
 	probes.UDPSendPageReturn,
 }
 
-func initManager(mgr *ddebpf.Manager, connCloseEventHandler ddebpf.EventHandler, failedConnsHandler ddebpf.EventHandler, runtimeTracer bool, cfg *config.Config) error {
+func initManager(mgr *ddebpf.Manager, connCloseEventHandler ddebpf.EventHandler, runtimeTracer bool, cfg *config.Config) error {
 	mgr.Maps = []*manager.Map{
 		{Name: probes.ConnMap},
 		{Name: probes.TCPStatsMap},
-		{Name: probes.TCPConnectSockPidMap},
-		{Name: probes.ConnCloseFlushed},
+		{Name: probes.TCPOngoingConnectPid},
 		{Name: probes.ConnCloseBatchMap},
 		{Name: "udp_recv_sock"},
 		{Name: "udpv6_recv_sock"},
@@ -84,9 +85,6 @@ func initManager(mgr *ddebpf.Manager, connCloseEventHandler ddebpf.EventHandler,
 		{Name: probes.TCPCloseProgsMap},
 	}
 	util.SetupClosedConnHandler(connCloseEventHandler, mgr, cfg)
-	if cfg.FailedConnectionsSupported() && failedConnsHandler != nil {
-		util.SetupFailedConnHandler(failedConnsHandler, mgr, cfg)
-	}
 
 	for _, funcName := range mainProbes {
 		p := &manager.Probe{

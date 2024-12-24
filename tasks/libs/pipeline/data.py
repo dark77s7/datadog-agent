@@ -32,9 +32,10 @@ def get_failed_jobs(pipeline: ProjectPipeline) -> FailedJobs:
         # We truncate the job name to increase readability
         job_name = truncate_job_name(job_name)
         job = jobs[-1]
+        is_standard_job = not isinstance(job, ProjectPipelineBridge)
         # Check the final job in the list: it contains the current status of the job
         # This excludes jobs that were retried and succeeded
-        trace = str(repo.jobs.get(job.id, lazy=True).trace(), 'utf-8') if isinstance(job, ProjectJob) else ""
+        trace = str(repo.jobs.get(job.id, lazy=True).trace(), 'utf-8') if is_standard_job else ""
         failure_type, failure_reason = get_job_failure_context(job, trace)
         final_status = ProjectJob(
             repo.manager,
@@ -43,7 +44,7 @@ def get_failed_jobs(pipeline: ProjectPipeline) -> FailedJobs:
                 "id": job.id,
                 "stage": job.stage,
                 "status": job.status,
-                "tag_list": job.tag_list if isinstance(job, ProjectJob) else [],
+                "tag_list": job.tag_list if is_standard_job else [],
                 "allow_failure": job.allow_failure,
                 "web_url": job.web_url,
                 "retry_summary": [ijob.status for ijob in jobs],
@@ -88,22 +89,10 @@ infra_failure_logs = [
         ),
         FailedJobReason.RUNNER,
     ),
-    # kitchen tests Azure VM allocation failures
-    (
-        re.compile(
-            r'Allocation failed\. We do not have sufficient capacity for the requested VM size in this region\.'
-        ),
-        FailedJobReason.KITCHEN_AZURE,
-    ),
     # Gitlab 5xx errors
     (
         re.compile(r'fatal: unable to access \'.*\': The requested URL returned error: 5..'),
         FailedJobReason.GITLAB,
-    ),
-    # kitchen tests general infrastructure issues
-    (
-        re.compile(r'ERROR: The kitchen tests failed due to infrastructure failures\.'),
-        FailedJobReason.KITCHEN,
     ),
     # End to end tests EC2 Spot instances allocation failures
     (
@@ -123,6 +112,10 @@ infra_failure_logs = [
 
 
 def get_infra_failure_info(job_log: str):
+    # No Gitlab trace means infra failure from Gitlab
+    if not job_log:
+        return FailedJobReason.GITLAB
+
     for regex, type in infra_failure_logs:
         if regex.search(job_log):
             return type
@@ -166,7 +159,7 @@ def truncate_job_name(job_name, max_char_per_job=48):
 
 # Those jobs have `allow_failure: true` but still need to be included
 # in failure reports
-jobs_allowed_to_fail_but_need_report = [re.compile(r'kitchen_test_security_agent.*')]
+jobs_allowed_to_fail_but_need_report = []
 
 
 def should_report_job(job_name, allow_failure):

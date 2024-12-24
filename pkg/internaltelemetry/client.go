@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"runtime"
 	"strconv"
@@ -20,11 +21,9 @@ import (
 
 	"go.uber.org/atomic"
 
-	metadatautils "github.com/DataDog/datadog-agent/comp/metadata/host/hostimpl/utils"
-	pb "github.com/DataDog/datadog-agent/pkg/proto/pbgo/trace"
-	"github.com/DataDog/datadog-agent/pkg/trace/config"
 	"github.com/DataDog/datadog-agent/pkg/util/log"
 	"github.com/DataDog/datadog-agent/pkg/version"
+	"github.com/shirou/gopsutil/v4/host"
 )
 
 const (
@@ -35,13 +34,19 @@ const (
 // Client defines the interface for a telemetry client
 type Client interface {
 	SendLog(level string, message string)
-	SendTraces(traces pb.Traces)
+	SendTraces(traces Traces)
+}
+
+// Endpoint defines the endpoint object
+type Endpoint struct {
+	APIKey string `json:"-"`
+	Host   string
 }
 
 type client struct {
 	m                  sync.Mutex
 	client             httpClient
-	endpoints          []*config.Endpoint
+	endpoints          []*Endpoint
 	sendPayloadTimeout time.Duration
 
 	// we can pre-calculate the host payload structure at init time
@@ -93,7 +98,7 @@ type Application struct {
 
 // TracePayload defines the trace payload object
 type TracePayload struct {
-	Traces []pb.Trace `json:"traces"`
+	Traces []Trace `json:"traces"`
 }
 
 // LogPayload defines the log payload object
@@ -114,8 +119,12 @@ type httpClient interface {
 }
 
 // NewClient creates a new telemetry client
-func NewClient(httpClient httpClient, endpoints []*config.Endpoint, service string, debug bool) Client {
-	info := metadatautils.GetInformation()
+func NewClient(httpClient httpClient, endpoints []*Endpoint, service string, debug bool) Client {
+	info, err := host.Info()
+	if err != nil {
+		log.Errorf("failed to retrieve host info: %v", err)
+		info = &host.InfoStat{}
+	}
 	return &client{
 		client:             httpClient,
 		endpoints:          endpoints,
@@ -153,13 +162,34 @@ func (c *client) SendLog(level, message string) {
 	c.sendPayload(RequestTypeLogs, payload)
 }
 
-func (c *client) SendTraces(traces pb.Traces) {
+func (c *client) SendTraces(traces Traces) {
 	c.m.Lock()
 	defer c.m.Unlock()
 	payload := TracePayload{
-		Traces: traces,
+		Traces: c.sampleTraces(traces),
 	}
 	c.sendPayload(RequestTypeTraces, payload)
+}
+
+// sampleTraces is a simple uniform sampling function that samples traces based
+// on the sampling rate, given that there is no trace agent to sample the traces
+// We try to keep the tracer behaviour: the first rule that matches apply its rate to the whole trace
+func (c *client) sampleTraces(traces Traces) Traces {
+	tracesWithSampling := Traces{}
+	for _, trace := range traces {
+		samplingRate := 1.0
+		for _, span := range trace {
+			if val, ok := span.Metrics["_dd.rule_psr"]; ok {
+				samplingRate = val
+				break
+			}
+		}
+		if rand.Float64() < samplingRate {
+			tracesWithSampling = append(tracesWithSampling, trace)
+		}
+	}
+	log.Debugf("sampling telemetry traces (had %d, kept %d)", len(traces), len(tracesWithSampling))
+	return tracesWithSampling
 }
 
 func (c *client) sendPayload(requestType RequestType, payload interface{}) {
@@ -180,7 +210,7 @@ func (c *client) sendPayload(requestType RequestType, payload interface{}) {
 	group := sync.WaitGroup{}
 	for _, endpoint := range c.endpoints {
 		group.Add(1)
-		go func(endpoint *config.Endpoint) {
+		go func(endpoint *Endpoint) {
 			defer group.Done()
 			url := fmt.Sprintf("%s%s", endpoint.Host, telemetryEndpoint)
 			req, err := http.NewRequest("POST", url, bytes.NewReader(serializedPayload))

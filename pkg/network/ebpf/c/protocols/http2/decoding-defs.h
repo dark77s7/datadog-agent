@@ -71,11 +71,11 @@
 #define HTTP2_END_OF_STREAM 0x1
 
 // Http2 max batch size.
-#define HTTP2_BATCH_SIZE 15
+#define HTTP2_BATCH_SIZE (MAX_BATCH_SIZE(http2_event_t))
 
 // The max number of events we can have in a single page in the batch_events array.
 // See more details in the comments of the USM_EVENTS_INIT.
-#define HTTP2_TERMINATED_BATCH_SIZE 80
+#define HTTP2_TERMINATED_BATCH_SIZE (MAX_BATCH_SIZE(conn_tuple_t))
 
 // MAX_4_BITS represents the maximum number that can be represented with 4 bits or less.
 // 1 << 4 - 1
@@ -216,7 +216,7 @@ typedef struct {
     __u32 remainder;
     __u32 header_length;
     char buf[HTTP2_FRAME_HEADER_SIZE];
-} frame_header_remainder_t;
+} incomplete_frame_t;
 
 // http2_telemetry_t is used to hold the HTTP/2 kernel telemetry.
 // request_seen                         Count of HTTP/2 requests seen

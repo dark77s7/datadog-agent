@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/DataDog/datadog-agent/comp/core/autodiscovery/integration"
-	"github.com/DataDog/datadog-agent/comp/core/autodiscovery/telemetry"
 	"github.com/DataDog/datadog-agent/pkg/databasemonitoring/aws"
 	dbmconfig "github.com/DataDog/datadog-agent/pkg/databasemonitoring/config"
 	"github.com/DataDog/datadog-agent/pkg/util/containers"
@@ -68,7 +67,7 @@ type DBMAuroraService struct {
 }
 
 // NewDBMAuroraListener returns a new DBMAuroraListener
-func NewDBMAuroraListener(Config, *telemetry.Store) (ServiceListener, error) {
+func NewDBMAuroraListener(ServiceListernerDeps) (ServiceListener, error) {
 	config, err := dbmconfig.NewAuroraAutodiscoveryConfig()
 	if err != nil {
 		return nil, err
@@ -239,6 +238,11 @@ func (d *DBMAuroraService) GetTags() ([]string, error) {
 	return []string{}, nil
 }
 
+// GetTagsWithCardinality returns the tags with given cardinality. Not supported in DBMAuroraService
+func (d *DBMAuroraService) GetTagsWithCardinality(_ string) ([]string, error) {
+	return d.GetTags()
+}
+
 // GetPid returns nil and an error because pids are currently not supported
 func (d *DBMAuroraService) GetPid(context.Context) (int, error) {
 	return -1, ErrNotSupported
@@ -273,7 +277,10 @@ func (d *DBMAuroraService) GetExtraConfig(key string) (string, error) {
 		return strconv.FormatBool(d.instance.IamEnabled), nil
 	case "dbclusteridentifier":
 		return d.clusterID, nil
+	case "dbname":
+		return d.instance.DbName, nil
 	}
+
 	return "", ErrNotSupported
 }
 

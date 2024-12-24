@@ -7,26 +7,25 @@
 package powershellmoduletest
 
 import (
-	"flag"
 	"fmt"
 	runneros "os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/DataDog/test-infra-definitions/components/os"
+	"github.com/DataDog/test-infra-definitions/scenarios/aws/ec2"
 
 	"github.com/DataDog/datadog-agent/test/new-e2e/pkg/e2e"
 	"github.com/DataDog/datadog-agent/test/new-e2e/pkg/environments"
-	awshost "github.com/DataDog/datadog-agent/test/new-e2e/pkg/environments/aws/host"
+	awshost "github.com/DataDog/datadog-agent/test/new-e2e/pkg/provisioners/aws/host"
 	"github.com/DataDog/datadog-agent/test/new-e2e/tests/agent-platform/common"
 	windowsCommon "github.com/DataDog/datadog-agent/test/new-e2e/tests/windows/common"
 	windowsAgent "github.com/DataDog/datadog-agent/test/new-e2e/tests/windows/common/agent"
-	"github.com/DataDog/test-infra-definitions/components/os"
-	"github.com/DataDog/test-infra-definitions/scenarios/aws/ec2"
 )
 
 var (
-	devMode = flag.Bool("devmode", false, "enable dev mode")
-
 	localModuleDir  string
 	remoteModuleDir = "C:\\Program Files\\WindowsPowerShell\\Modules\\Datadog"
 )
@@ -44,10 +43,6 @@ func init() {
 // TestVMSuite runs tests for the VM interface to ensure its implementation is correct.
 func TestVMSuite(t *testing.T) {
 	suiteParams := []e2e.SuiteOption{e2e.WithProvisioner(awshost.ProvisionerNoAgentNoFakeIntake(awshost.WithEC2InstanceOptions(ec2.WithOS(os.WindowsDefault))))}
-	if *devMode {
-		suiteParams = append(suiteParams, e2e.WithDevMode())
-	}
-
 	e2e.Run(t, &vmSuite{}, suiteParams...)
 }
 
@@ -187,7 +182,23 @@ func (v *vmSuite) setupTestHost() {
 
 	// Install powershell-yaml
 	vm.MustExecute("Install-PackageProvider NuGet -Force")
-	vm.MustExecute("Set-PSRepository PSGallery -InstallationPolicy Trusted")
+	// Retry to avoid transient network issues
+	if !v.Eventually(func() bool {
+		_, err := vm.Execute("Set-PSRepository PSGallery -InstallationPolicy Trusted")
+		if err == nil {
+			return true
+		}
+		v.T().Logf("Set-PSRepository failed %s", err)
+		// Registers PSGallery in case it is missing, but ignore error since it
+		// fails if the repository is already registered.
+		_, err = vm.Execute("Register-PSRepository -Default")
+		if err != nil {
+			v.T().Logf("Register-PSRepository failed %s", err)
+		}
+		return false
+	}, 5*time.Minute, 10*time.Second) {
+		v.FailNow("Failed to set PSGallery as a trusted repository")
+	}
 	vm.MustExecute("Install-Module powershell-yaml -Repository PSGallery")
 }
 

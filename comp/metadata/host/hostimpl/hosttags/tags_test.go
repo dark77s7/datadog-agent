@@ -15,9 +15,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/DataDog/datadog-agent/pkg/config"
 	configmock "github.com/DataDog/datadog-agent/pkg/config/mock"
-	model "github.com/DataDog/datadog-agent/pkg/config/model"
+	"github.com/DataDog/datadog-agent/pkg/config/model"
 )
 
 func setupTest(t *testing.T) (model.Config, context.Context) {
@@ -111,11 +110,11 @@ func TestHostTagsCache(t *testing.T) {
 	var fooErr error
 	nbCall := 0
 
-	getProvidersDefinitionsFunc = func(config.Reader) map[string]*providerDef {
+	getProvidersDefinitionsFunc = func(model.Reader) map[string]*providerDef {
 		return map[string]*providerDef{
 			"foo": {
 				retries: 2,
-				getTags: func(ctx context.Context) ([]string, error) {
+				getTags: func(_ context.Context) ([]string, error) {
 					nbCall++
 					return fooTags, fooErr
 				},
@@ -137,4 +136,19 @@ func TestHostTagsCache(t *testing.T) {
 	assert.NotNil(t, hostTags.System)
 	assert.Equal(t, []string{"foo1:value1"}, hostTags.System)
 	assert.Equal(t, 2, nbCall)
+}
+
+func TestHaAgentTags(t *testing.T) {
+	mockConfig, ctx := setupTest(t)
+
+	hostTags := Get(ctx, false, mockConfig)
+	assert.NotNil(t, hostTags.System)
+	assert.Equal(t, []string{}, hostTags.System)
+
+	mockConfig.SetWithoutSource("ha_agent.enabled", true)
+	mockConfig.SetWithoutSource("ha_agent.group", "my-group")
+
+	hostTags = Get(ctx, false, mockConfig)
+	assert.NotNil(t, hostTags.System)
+	assert.Equal(t, []string{"agent_group:my-group"}, hostTags.System)
 }

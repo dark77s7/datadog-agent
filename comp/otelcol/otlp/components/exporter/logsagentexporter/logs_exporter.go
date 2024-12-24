@@ -73,14 +73,22 @@ func (e *Exporter) ConsumeLogs(ctx context.Context, ld plog.Logs) (err error) {
 		if ddLog.Service != nil {
 			service = *ddLog.Service
 		}
-		status := ddLog.AdditionalProperties["status"]
-		if status == "" {
-			status = message.StatusInfo
+		status := message.StatusInfo
+		if val, ok := ddLog.AdditionalProperties["status"]; ok {
+			if strVal, ok := val.(string); ok && strVal != "" {
+				status = strVal
+			}
 		}
 		origin := message.NewOrigin(e.logSource)
 		origin.SetTags(tags)
 		origin.SetService(service)
-		origin.SetSource(e.logSource.Name)
+		src := e.logSource.Name
+		if val, ok := ddLog.AdditionalProperties["datadog.log.source"]; ok {
+			if strVal, ok := val.(string); ok && strVal != "" {
+				src = strVal
+			}
+		}
+		origin.SetSource(src)
 
 		content, err := ddLog.MarshalJSON()
 		if err != nil {
@@ -90,6 +98,9 @@ func (e *Exporter) ConsumeLogs(ctx context.Context, ld plog.Logs) (err error) {
 		// ingestionTs is an internal field used for latency tracking on the status page, not the actual log timestamp.
 		ingestionTs := time.Now().UnixNano()
 		message := message.NewMessage(content, origin, status, ingestionTs)
+		if ddLog.Hostname != nil {
+			message.Hostname = *ddLog.Hostname
+		}
 
 		e.logsAgentChannel <- message
 	}

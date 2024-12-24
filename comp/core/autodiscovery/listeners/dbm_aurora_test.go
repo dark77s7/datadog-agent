@@ -46,7 +46,7 @@ func TestDBMAuroraListener(t *testing.T) {
 			numDiscoveryIntervals: 0,
 			rdsClientConfigurer: func(k *aws.MockRDSClient) {
 				k.EXPECT().GetAuroraClustersFromTags(contextWithTimeout(1*time.Second), []string{defaultClusterTag}).DoAndReturn(
-					func(ctx context.Context, tags []string) ([]string, error) {
+					func(ctx context.Context, _ []string) ([]string, error) {
 						<-ctx.Done()
 						return nil, ctx.Err()
 					}).AnyTimes()
@@ -67,7 +67,7 @@ func TestDBMAuroraListener(t *testing.T) {
 				gomock.InOrder(
 					k.EXPECT().GetAuroraClustersFromTags(gomock.Any(), []string{defaultClusterTag}).Return([]string{"my-cluster-1"}, nil).AnyTimes(),
 					k.EXPECT().GetAuroraClusterEndpoints(contextWithTimeout(1*time.Second), []string{"my-cluster-1"}).DoAndReturn(
-						func(ctx context.Context, ids []string) (map[string]*aws.AuroraCluster, error) {
+						func(ctx context.Context, _ []string) (map[string]*aws.AuroraCluster, error) {
 							<-ctx.Done()
 							return nil, ctx.Err()
 						}).AnyTimes(),
@@ -276,6 +276,44 @@ func TestDBMAuroraListener(t *testing.T) {
 			assert.Equal(t, len(tc.expectedDelServices), len(deletedServices))
 			assert.ElementsMatch(t, tc.expectedDelServices, deletedServices)
 		})
+	}
+}
+
+func TestGetExtraConfig(t *testing.T) {
+	testCases := []struct {
+		service       *DBMAuroraService
+		expectedExtra map[string]string
+	}{
+		{
+			service: &DBMAuroraService{
+				adIdentifier: dbmPostgresADIdentifier,
+				entityID:     "f7fee36c58e3da8a",
+				checkName:    "postgres",
+				clusterID:    "my-cluster-1",
+				region:       "us-east-1",
+				instance: &aws.Instance{
+					Endpoint:   "my-endpoint",
+					Port:       5432,
+					IamEnabled: true,
+					Engine:     "aurora-postgresql",
+					DbName:     "app",
+				},
+			},
+			expectedExtra: map[string]string{
+				"dbname":                         "app",
+				"region":                         "us-east-1",
+				"managed_authentication_enabled": "true",
+				"dbclusteridentifier":            "my-cluster-1",
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		for key, value := range tc.expectedExtra {
+			v, err := tc.service.GetExtraConfig(key)
+			assert.NoError(t, err)
+			assert.Equal(t, value, v)
+		}
 	}
 }
 

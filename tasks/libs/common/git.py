@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import tempfile
 from contextlib import contextmanager
+from time import sleep
 from typing import TYPE_CHECKING
 
+from invoke import Context
 from invoke.exceptions import Exit
 
 from tasks.libs.common.color import Color, color_message
-from tasks.libs.common.constants import DEFAULT_BRANCH
 from tasks.libs.common.user_interactions import yes_no_question
 
 if TYPE_CHECKING:
@@ -45,17 +48,81 @@ def get_staged_files(ctx, commit="HEAD", include_deleted_files=False) -> Iterabl
                 yield file
 
 
-def get_modified_files(ctx) -> list[str]:
-    last_main_commit = ctx.run("git merge-base HEAD origin/main", hide=True).stdout
-    return ctx.run(f"git diff --name-only --no-renames {last_main_commit}", hide=True).stdout.splitlines()
+def get_file_modifications(
+    ctx, base_branch=None, added=False, modified=False, removed=False, only_names=False, no_renames=False
+) -> list[tuple[str, str]]:
+    """Gets file status changes for the current branch compared to the base branch.
+
+    If no filter is provided, will return all the files.
+
+    Args:
+        added: Include added files
+        modified: Include modified files
+        removed: Include removed files
+        only_names: Return only the file names without the status
+        no_renames: Do not include renamed files
+
+    Returns:
+        A list of (status, filename)
+    """
+
+    from tasks.libs.releasing.json import _get_release_json_value
+
+    base_branch = base_branch or _get_release_json_value('base_branch')
+
+    last_main_commit = ctx.run(f"git merge-base HEAD origin/{base_branch}", hide=True).stdout.strip()
+
+    flags = '--no-renames' if no_renames else ''
+
+    modifications = [
+        line.split('\t')
+        for line in ctx.run(f"git diff --name-status {flags} {last_main_commit}", hide=True).stdout.splitlines()
+    ]
+    if added or modified or removed:
+        # skip when a file is renamed
+        modifications = [m for m in modifications if len(m) != 3]
+        modifications = [
+            (status, file)
+            for status, file in modifications
+            if (added and status == "A") or (modified and status in "MCRT") or (removed and status == "D")
+        ]
+
+    if only_names:
+        modifications = [file for _, file in modifications]
+
+    return modifications
+
+
+def get_modified_files(ctx, base_branch=None) -> list[str]:
+    base_branch = base_branch or get_default_branch()
+
+    return get_file_modifications(
+        ctx, base_branch=base_branch, added=True, modified=True, only_names=True, no_renames=True
+    )
 
 
 def get_current_branch(ctx) -> str:
     return ctx.run("git rev-parse --abbrev-ref HEAD", hide=True).stdout.strip()
 
 
-def get_common_ancestor(ctx, branch) -> str:
-    return ctx.run(f"git merge-base {branch} main", hide=True).stdout.strip()
+def is_agent6(ctx) -> bool:
+    return get_current_branch(ctx).startswith("6.53")
+
+
+def get_default_branch(major: int | None = None):
+    """Returns the default git branch given the current context (agent 6 / 7)."""
+
+    # We create a context to avoid passing context in each function
+    # This context is used to get the current branch so there is no side effect
+    ctx = Context()
+
+    return '6.53.x' if major is None and is_agent6(ctx) or major == 6 else 'main'
+
+
+def get_common_ancestor(ctx, branch, base=None) -> str:
+    base = base or f"origin/{get_default_branch()}"
+
+    return ctx.run(f"git merge-base {branch} {base}", hide=True).stdout.strip()
 
 
 def check_uncommitted_changes(ctx):
@@ -86,7 +153,7 @@ def get_main_parent_commit(ctx) -> str:
     """
     Get the commit sha your current branch originated from
     """
-    return ctx.run("git merge-base HEAD origin/main", hide=True).stdout.strip()
+    return ctx.run(f"git merge-base HEAD origin/{get_default_branch()}", hide=True).stdout.strip()
 
 
 def check_base_branch(branch, release_version):
@@ -94,28 +161,48 @@ def check_base_branch(branch, release_version):
     Checks if the given branch is either the default branch or the release branch associated
     with the given release version.
     """
-    return branch == DEFAULT_BRANCH or branch == release_version.branch()
+    return branch == get_default_branch() or branch == release_version.branch()
 
 
-def try_git_command(ctx, git_command):
-    """
-    Try a git command that should be retried (after user confirmation) if it fails.
+def try_git_command(ctx, git_command, non_interactive_retries=2, non_interactive_delay=5):
+    """Try a git command that should be retried (after user confirmation) if it fails.
     Primarily useful for commands which can fail if commit signing fails: we don't want the
     whole workflow to fail if that happens, we want to retry.
+
+    Args:
+        ctx: The invoke context.
+        git_command: The git command to run.
+        non_interactive_retries: The number of times to retry the command if it fails when running non-interactively.
+        non_interactive_delay: The delay in seconds to retry the command if it fails when running non-interactively.
     """
 
     do_retry = True
+    n_retries = 0
+    interactive = sys.stdin.isatty()
 
     while do_retry:
         res = ctx.run(git_command, warn=True)
         if res.exited is None or res.exited > 0:
-            print(
-                color_message(
-                    f"Failed to run \"{git_command}\" (did the commit/tag signing operation fail?)",
-                    "orange",
+            if interactive:
+                print(
+                    color_message(
+                        f"Failed to run \"{git_command}\" (did the commit/tag signing operation fail?)",
+                        "orange",
+                    )
                 )
-            )
-            do_retry = yes_no_question("Do you want to retry this operation?", color="orange", default=True)
+                do_retry = yes_no_question("Do you want to retry this operation?", color="orange", default=True)
+            else:
+                # Non interactive, retry in `non_interactive_delay` seconds if we haven't reached the limit
+                n_retries += 1
+                if n_retries > non_interactive_retries:
+                    print(f'{color_message("Error", Color.RED)}: Failed to run git command', file=sys.stderr)
+                    return False
+
+                print(
+                    f'{color_message("Warning", Color.ORANGE)}: Retrying git command in {non_interactive_delay}s',
+                    file=sys.stderr,
+                )
+                sleep(non_interactive_delay)
             continue
 
         return True
@@ -167,7 +254,12 @@ def get_last_commit(ctx, repo, branch):
     )
 
 
-def get_last_tag(ctx, repo, pattern):
+def get_last_release_tag(ctx, repo, pattern):
+    import re
+    from functools import cmp_to_key
+
+    import semver
+
     tags = ctx.run(
         rf'git ls-remote -t https://github.com/DataDog/{repo} "{pattern}"',
         hide=True,
@@ -180,9 +272,41 @@ def get_last_tag(ctx, repo, pattern):
             ),
             code=1,
         )
-    last_tag = tags.splitlines()[-1]
+
+    release_pattern = re.compile(r'.*7\.[0-9]+\.[0-9]+(-rc.*|-devel.*)?$')
+    tags_without_suffix = [
+        line for line in tags.splitlines() if not line.endswith("^{}") and release_pattern.match(line)
+    ]
+    last_tag = max(tags_without_suffix, key=lambda x: cmp_to_key(semver.compare)(x.split('/')[-1]))
     last_tag_commit, last_tag_name = last_tag.split()
-    if last_tag_name.endswith("^{}"):
-        last_tag_name = last_tag_name.removesuffix("^{}")
+    tags_with_suffix = [line for line in tags.splitlines() if line.endswith("^{}") and release_pattern.match(line)]
+    if tags_with_suffix:
+        last_tag_with_suffix = max(
+            tags_with_suffix, key=lambda x: cmp_to_key(semver.compare)(x.split('/')[-1].removesuffix("^{}"))
+        )
+        last_tag_commit_with_suffix, last_tag_name_with_suffix = last_tag_with_suffix.split()
+        if (
+            semver.compare(last_tag_name_with_suffix.split('/')[-1].removesuffix("^{}"), last_tag_name.split("/")[-1])
+            >= 0
+        ):
+            last_tag_commit = last_tag_commit_with_suffix
+            last_tag_name = last_tag_name_with_suffix.removesuffix("^{}")
     last_tag_name = last_tag_name.removeprefix("refs/tags/")
     return last_tag_commit, last_tag_name
+
+
+def get_git_config(key):
+    result = subprocess.run(['git', 'config', '--get', key], capture_output=True, text=True)
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def set_git_config(key, value):
+    subprocess.run(['git', 'config', key, value])
+
+
+def revert_git_config(original_config):
+    for key, value in original_config.items():
+        if value is None:
+            subprocess.run(['git', 'config', '--unset', key])
+        else:
+            subprocess.run(['git', 'config', key, value])

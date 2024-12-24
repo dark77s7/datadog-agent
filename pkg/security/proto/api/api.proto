@@ -15,6 +15,7 @@ message SecurityEventMessage {
 
 message DumpProcessCacheParams {
     bool WithArgs = 1;
+    string Format = 2;
 }
 
 message SecurityDumpProcessCacheMessage {
@@ -46,7 +47,7 @@ message RuleSetReportMessage{
 message EventTypePolicy{
     string EventType = 1;
     uint32 Mode = 2;
-    uint32 Flags = 3;
+    // field 3 is deprecated
     Approvers Approvers = 4;
 }
 
@@ -141,6 +142,14 @@ message StorageRequestParams {
     bool RemoteStorageCompression = 5;
 }
 
+message ActivityDumpParams {
+    string Timeout = 1;
+    bool DifferentiateArgs = 2;
+    StorageRequestParams Storage = 3;
+    string ContainerID = 4;
+    string CGroupID = 5;
+}
+
 message MetadataMessage {
     string AgentVersion = 1;
     string AgentCommit = 2;
@@ -157,6 +166,7 @@ message MetadataMessage {
     string Timeout = 12;
     uint64 Size = 13;
     string Serialization = 14;
+    string CGroupID = 15;
 }
 
 message StorageRequestMessage {
@@ -188,6 +198,7 @@ message ActivityDumpListMessage {
 message ActivityDumpStopParams {
     string Name = 1;
     string ContainerID = 2;
+    string CGroupID = 3;
 }
 
 message ActivityDumpStopMessage {
@@ -294,6 +305,7 @@ service SecurityModule {
     rpc DumpDiscarders(DumpDiscardersParams) returns (DumpDiscardersMessage) {}
 
     // Activity dumps
+    rpc DumpActivity(ActivityDumpParams) returns (ActivityDumpMessage) {}
     rpc ListActivityDumps(ActivityDumpListParams) returns (ActivityDumpListMessage) {}
     rpc StopActivityDump(ActivityDumpStopParams) returns (ActivityDumpStopMessage) {}
     rpc TranscodingRequest(TranscodingRequestParams) returns (TranscodingRequestMessage) {}

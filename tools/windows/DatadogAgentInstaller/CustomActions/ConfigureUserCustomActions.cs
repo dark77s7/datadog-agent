@@ -1,15 +1,14 @@
+using Datadog.CustomActions.Extensions;
+using Datadog.CustomActions.Interfaces;
+using Datadog.CustomActions.Native;
+using Datadog.CustomActions.Rollback;
+using Microsoft.Deployment.WindowsInstaller;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
 using System.Security.AccessControl;
 using System.Security.Principal;
-using Newtonsoft.Json;
-using Datadog.CustomActions.Extensions;
-using Datadog.CustomActions.Interfaces;
-using Datadog.CustomActions.Native;
-using Microsoft.Deployment.WindowsInstaller;
-using Datadog.CustomActions.Rollback;
 
 namespace Datadog.CustomActions
 {
@@ -178,6 +177,10 @@ namespace Datadog.CustomActions
                 InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
                 PropagationFlags.None,
                 AccessControlType.Allow));
+            fileSystemSecurity.SetOwner(new SecurityIdentifier(
+                WellKnownSidType.LocalSystemSid, null));
+            fileSystemSecurity.SetGroup(new SecurityIdentifier(
+                WellKnownSidType.LocalSystemSid, null));
             UpdateAndLogAccessControl(_session.Property("APPLICATIONDATADIRECTORY"), fileSystemSecurity);
         }
 
@@ -558,7 +561,6 @@ namespace Datadog.CustomActions
             }
         }
 
-        [CustomAction]
         public static ActionResult ConfigureUser(Session session)
         {
             return new ConfigureUserCustomActions(new SessionWrapper(session), "ConfigureUser").ConfigureUser();
@@ -570,7 +572,6 @@ namespace Datadog.CustomActions
             return ActionResult.Success;
         }
 
-        [CustomAction]
         public static ActionResult ConfigureUserRollback(Session session)
         {
             return new ConfigureUserCustomActions(new SessionWrapper(session), "ConfigureUser").ConfigureUserRollback();
@@ -585,9 +586,6 @@ namespace Datadog.CustomActions
                 // agent needs to be able to write to run/
                 // agent needs to be able to create auth_token
                 _session.Property("APPLICATIONDATADIRECTORY"),
-                // allow agent to write __pycache__
-                Path.Combine(_session.Property("PROJECTLOCATION"), "embedded2"),
-                Path.Combine(_session.Property("PROJECTLOCATION"), "embedded3"),
             };
         }
 
@@ -701,7 +699,6 @@ namespace Datadog.CustomActions
             return ActionResult.Success;
         }
 
-        [CustomAction]
         public static ActionResult UninstallUser(Session session)
         {
             return new ConfigureUserCustomActions(new SessionWrapper(session), "UninstallUser").UninstallUser();
@@ -713,7 +710,6 @@ namespace Datadog.CustomActions
             return ActionResult.Success;
         }
 
-        [CustomAction]
         public static ActionResult UninstallUserRollback(Session session)
         {
             return new ConfigureUserCustomActions(new SessionWrapper(session), "UninstallUser").UninstallUserRollback();

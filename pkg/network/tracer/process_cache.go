@@ -3,7 +3,7 @@
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
 // Copyright 2016-present Datadog, Inc.
 
-//go:build linux_bpf
+//go:build linux_bpf || (windows && npm)
 
 package tracer
 
@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cihub/seelog"
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -175,10 +174,9 @@ func (pc *processCache) add(p *events.Process) {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
 
-	if log.ShouldLog(seelog.TraceLvl) {
+	if log.ShouldLog(log.TraceLvl) {
 		log.Tracef("adding process %+v to process cache", p)
 	}
-
 	p.Expiry = time.Now().Add(defaultExpiry).Unix()
 	if evicted := pc.cache.Add(processCacheKey{pid: p.Pid, startTime: p.StartTime}, p); evicted {
 		processCacheTelemetry.cacheEvicts.Inc()
@@ -196,7 +194,7 @@ func (pc *processCache) Get(pid uint32, ts int64) (*events.Process, bool) {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
 
-	log.TraceFunc(func() string { return fmt.Sprintf("looking up pid %d", pid) })
+	log.TraceFunc(func() string { return fmt.Sprintf("looking up pid %d %v", pid, ts) })
 
 	pl := pc.cacheByPid[pid]
 	if closest := pl.closest(ts); closest != nil {

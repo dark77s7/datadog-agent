@@ -14,9 +14,7 @@ import (
 	"sync"
 	"unsafe"
 
-	"github.com/cihub/seelog"
-
-	"github.com/DataDog/datadog-agent/pkg/config"
+	pkgconfigsetup "github.com/DataDog/datadog-agent/pkg/config/setup"
 	"github.com/DataDog/datadog-agent/pkg/telemetry"
 	"github.com/DataDog/datadog-agent/pkg/util/log"
 )
@@ -76,7 +74,7 @@ func MemoryTracker(ptr unsafe.Pointer, sz C.size_t, op C.rtloader_mem_ops_t) {
 	// but from profiling, even passing these vars through as arguments allocates to the heap.
 	// This is an optimization to avoid even evaluating the `Tracef` call if the trace log
 	// level is not enabled.
-	if log.ShouldLog(seelog.TraceLvl) {
+	if log.ShouldLog(log.TraceLvl) {
 		log.Tracef("Memory Tracker - ptr: %v, sz: %v, op: %v", ptr, sz, op)
 	}
 	switch op {
@@ -94,7 +92,7 @@ func MemoryTracker(ptr unsafe.Pointer, sz C.size_t, op C.rtloader_mem_ops_t) {
 		if !ok {
 			log.Debugf("untracked memory was attempted to be freed - set trace level for details")
 			lvl, err := log.GetLogLevel()
-			if err == nil && lvl == seelog.TraceLvl {
+			if err == nil && lvl == log.TraceLvl {
 				stack := string(debug.Stack())
 				log.Tracef("Memory Tracker - stacktrace: \n%s", stack)
 			}
@@ -118,7 +116,7 @@ func TrackedCString(str string) *C.char {
 	cstr := C.CString(str)
 
 	// TODO(memory-tracking): track the origin of the string (for example check name)
-	if config.Datadog().GetBool("memtrack_enabled") {
+	if pkgconfigsetup.Datadog().GetBool("memtrack_enabled") {
 		MemoryTracker(unsafe.Pointer(cstr), C.size_t(len(str)+1), C.DATADOG_AGENT_RTLOADER_ALLOCATION)
 	}
 

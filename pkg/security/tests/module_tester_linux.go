@@ -3,7 +3,7 @@
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
 // Copyright 2016-present Datadog, Inc.
 
-//go:build linux && (functionaltests || stresstests)
+//go:build linux && functionaltests
 
 // Package tests holds tests related files
 package tests
@@ -27,27 +27,23 @@ import (
 	"time"
 
 	"github.com/avast/retry-go/v4"
-	"github.com/cihub/seelog"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/hashicorp/go-multierror"
 	"github.com/oliveagle/jsonpath"
 	"github.com/stretchr/testify/assert"
 	"golang.org/x/sys/unix"
 
-	"github.com/DataDog/datadog-agent/comp/core/telemetry"
-	"github.com/DataDog/datadog-agent/comp/core/telemetry/telemetryimpl"
-	workloadmeta "github.com/DataDog/datadog-agent/comp/core/workloadmeta/def"
 	ebpftelemetry "github.com/DataDog/datadog-agent/pkg/ebpf/telemetry"
 	"github.com/DataDog/datadog-agent/pkg/eventmonitor"
 	secconfig "github.com/DataDog/datadog-agent/pkg/security/config"
 	"github.com/DataDog/datadog-agent/pkg/security/ebpf/kernel"
-	"github.com/DataDog/datadog-agent/pkg/security/events"
 	"github.com/DataDog/datadog-agent/pkg/security/module"
 	sprobe "github.com/DataDog/datadog-agent/pkg/security/probe"
 	"github.com/DataDog/datadog-agent/pkg/security/proto/api"
 	cgroupModel "github.com/DataDog/datadog-agent/pkg/security/resolvers/cgroup/model"
 	rulesmodule "github.com/DataDog/datadog-agent/pkg/security/rules"
-	"github.com/DataDog/datadog-agent/pkg/security/secl/compiler/eval"
+	"github.com/DataDog/datadog-agent/pkg/security/rules/bundled"
+	"github.com/DataDog/datadog-agent/pkg/security/secl/containerutils"
 	"github.com/DataDog/datadog-agent/pkg/security/secl/model"
 	"github.com/DataDog/datadog-agent/pkg/security/secl/rules"
 	activity_tree "github.com/DataDog/datadog-agent/pkg/security/security_profile/activity_tree"
@@ -56,14 +52,16 @@ import (
 	"github.com/DataDog/datadog-agent/pkg/security/serializers"
 	"github.com/DataDog/datadog-agent/pkg/security/tests/statsdclient"
 	"github.com/DataDog/datadog-agent/pkg/security/utils"
-	"github.com/DataDog/datadog-agent/pkg/util/fxutil"
 	utilkernel "github.com/DataDog/datadog-agent/pkg/util/kernel"
 	"github.com/DataDog/datadog-agent/pkg/util/log"
-	"github.com/DataDog/datadog-agent/pkg/util/optional"
 )
 
 var (
-	logger seelog.LoggerInterface
+	logger log.LoggerInterface
+)
+
+const (
+	filelessExecutionFilenamePrefix = "memfd:"
 )
 
 const testConfig = `---
@@ -75,15 +73,14 @@ system_probe_config:
 
 event_monitoring_config:
   socket: /tmp/test-event-monitor.sock
-  runtime_compilation:
-    enabled: true
-  remote_tagger: false
   custom_sensitive_words:
     - "*custom*"
   network:
     enabled: true
     ingress:
       enabled: {{ .NetworkIngressEnabled }}
+    raw_packet:
+      enabled: {{ .NetworkRawPacketEnabled}}
   flush_discarder_window: 0
 {{if .DisableFilters}}
   enable_kernel_filters: false
@@ -105,6 +102,10 @@ runtime_security_config:
   enabled: {{ .RuntimeSecurityEnabled }}
   internal_monitoring:
     enabled: true
+{{ if gt .EventServerRetention 0 }}
+  event_server:
+    retention: {{ .EventServerRetention }}
+{{ end }}
   remote_configuration:
     enabled: false
   on_demand:
@@ -188,61 +189,20 @@ runtime_security_config:
     enabled: {{.EBPFLessEnabled}}
   hash_resolver:
     enabled: true
-`
-
-const testPolicy = `---
-version: 1.2.3
-
-hooks:
-{{range $OnDemandProbe := .OnDemandProbes}}
-  - name: {{$OnDemandProbe.Name}}
-    syscall: {{$OnDemandProbe.IsSyscall}}
-    args:
-{{range $Arg := $OnDemandProbe.Args}}
-      - n: {{$Arg.N}}
-        kind: {{$Arg.Kind}}
-{{end}}
-{{end}}
-
-macros:
-{{range $Macro := .Macros}}
-  - id: {{$Macro.ID}}
-    expression: >-
-      {{$Macro.Expression}}
-{{end}}
-
-rules:
-{{range $Rule := .Rules}}
-  - id: {{$Rule.ID}}
-    version: {{$Rule.Version}}
-    expression: >-
-      {{$Rule.Expression}}
-    disabled: {{$Rule.Disabled}}
-    tags:
-{{- range $Tag, $Val := .Tags}}
-      {{$Tag}}: {{$Val}}
-{{- end}}
-    actions:
-{{- range $Action := .Actions}}
-{{- if $Action.Set}}
-      - set:
-          name: {{$Action.Set.Name}}
-		  {{- if $Action.Set.Value}}
-          value: {{$Action.Set.Value}}
-          {{- else if $Action.Set.Field}}
-          field: {{$Action.Set.Field}}
-          {{- end}}
-          scope: {{$Action.Set.Scope}}
-          append: {{$Action.Set.Append}}
-{{- end}}
-{{- if $Action.Kill}}
-      - kill:
-          {{- if $Action.Kill.Signal}}
-          signal: {{$Action.Kill.Signal}}
-          {{- end}}
-{{- end}}
-{{- end}}
-{{end}}
+  enforcement:
+    exclude_binaries:
+      - {{ .EnforcementExcludeBinary }}
+    rule_source_allowed:
+      - file
+    disarmer:
+      container:
+        enabled: {{.EnforcementDisarmerContainerEnabled}}
+        max_allowed: {{.EnforcementDisarmerContainerMaxAllowed}}
+        period: {{.EnforcementDisarmerContainerPeriod}}
+      executable:
+        enabled: {{.EnforcementDisarmerExecutableEnabled}}
+        max_allowed: {{.EnforcementDisarmerExecutableMaxAllowed}}
+        period: {{.EnforcementDisarmerExecutablePeriod}}
 `
 
 const (
@@ -268,24 +228,6 @@ type testModule struct {
 	ruleEngine    *rulesmodule.RuleEngine
 	tracePipe     *tracePipeLogger
 	msgSender     *fakeMsgSender
-}
-
-var testMod *testModule
-var commonCfgDir string
-
-type onRuleHandler func(*model.Event, *rules.Rule)
-type onProbeEventHandler func(*model.Event)
-type onCustomSendEventHandler func(*rules.Rule, *events.CustomEvent)
-type onSendEventHandler func(*rules.Rule, *model.Event)
-type onDiscarderPushedHandler func(event eval.Event, field eval.Field, eventType eval.EventType) bool
-
-type eventHandlers struct {
-	sync.RWMutex
-	onRuleMatch       onRuleHandler
-	onProbeEvent      onProbeEventHandler
-	onCustomSendEvent onCustomSendEventHandler
-	onSendEvent       onSendEventHandler
-	onDiscarderPushed onDiscarderPushedHandler
 }
 
 //nolint:deadcode,unused
@@ -494,7 +436,6 @@ func validateProcessContextSECL(tb testing.TB, event *model.Event) {
 	if event.Origin != "ebpfless" {
 		nameFields = append(nameFields,
 			"process.ancestors.file.name",
-			"process.parent.file.path",
 			"process.parent.file.name",
 		)
 	}
@@ -506,7 +447,10 @@ func validateProcessContextSECL(tb testing.TB, event *model.Event) {
 		"process.file.path",
 	}
 	if event.Origin != "ebpfless" {
-		pathFields = append(pathFields, "process.ancestors.file.path")
+		pathFields = append(pathFields,
+			"process.parent.file.path",
+			"process.ancestors.file.path",
+		)
 	}
 
 	pathFieldValid := true
@@ -648,7 +592,9 @@ func newTestModuleWithOnDemandProbes(t testing.TB, onDemandHooks []rules.OnDeman
 			fmt.Println(err)
 		}
 		commonCfgDir = cd
-		os.Chdir(commonCfgDir)
+		if err := os.Chdir(commonCfgDir); err != nil {
+			return nil, err
+		}
 	}
 
 	var proFile *os.File
@@ -676,7 +622,7 @@ func newTestModuleWithOnDemandProbes(t testing.TB, onDemandHooks []rules.OnDeman
 
 	if opts.dynamicOpts.disableBundledRules {
 		ruleDefs = append(ruleDefs, &rules.RuleDefinition{
-			ID:       events.NeedRefreshSBOMRuleID,
+			ID:       bundled.NeedRefreshSBOMRuleID,
 			Disabled: true,
 			Combine:  rules.OverridePolicy,
 		})
@@ -695,7 +641,7 @@ func newTestModuleWithOnDemandProbes(t testing.TB, onDemandHooks []rules.OnDeman
 	if testEnvironment == DockerEnvironment || ebpfLessEnabled {
 		cmdWrapper = newStdCmdWrapper()
 	} else {
-		wrapper, err := newDockerCmdWrapper(st.Root(), st.Root(), "ubuntu")
+		wrapper, err := newDockerCmdWrapper(st.Root(), st.Root(), "ubuntu", "")
 		if err == nil {
 			cmdWrapper = newMultiCmdWrapper(wrapper, newStdCmdWrapper())
 		} else {
@@ -775,21 +721,27 @@ func newTestModuleWithOnDemandProbes(t testing.TB, onDemandHooks []rules.OnDeman
 	emopts := eventmonitor.Opts{
 		StatsdClient: statsdClient,
 		ProbeOpts: sprobe.Opts{
-			StatsdClient:           statsdClient,
-			DontDiscardRuntime:     true,
-			PathResolutionEnabled:  true,
-			SyscallsMonitorEnabled: true,
-			TTYFallbackEnabled:     true,
-			EBPFLessEnabled:        ebpfLessEnabled,
+			StatsdClient:             statsdClient,
+			DontDiscardRuntime:       true,
+			PathResolutionEnabled:    true,
+			EnvsVarResolutionEnabled: !opts.staticOpts.disableEnvVarsResolution,
+			SyscallsMonitorEnabled:   true,
+			TTYFallbackEnabled:       true,
+			EBPFLessEnabled:          ebpfLessEnabled,
 		},
 	}
-	if opts.staticOpts.tagsResolver != nil {
-		emopts.ProbeOpts.TagsResolver = opts.staticOpts.tagsResolver
+
+	if opts.staticOpts.tagger != nil {
+		emopts.ProbeOpts.Tagger = opts.staticOpts.tagger
 	} else {
-		emopts.ProbeOpts.TagsResolver = NewFakeResolverDifferentImageNames()
+		emopts.ProbeOpts.Tagger = NewFakeTaggerDifferentImageNames()
 	}
-	telemetry := fxutil.Test[telemetry.Component](t, telemetryimpl.MockModule())
-	testMod.eventMonitor, err = eventmonitor.NewEventMonitor(emconfig, secconfig, emopts, optional.NewNoneOption[workloadmeta.Component](), telemetry)
+
+	if opts.staticOpts.discardRuntime {
+		emopts.ProbeOpts.DontDiscardRuntime = false
+	}
+
+	testMod.eventMonitor, err = eventmonitor.NewEventMonitor(emconfig, secconfig, emopts)
 	if err != nil {
 		return nil, err
 	}
@@ -799,10 +751,13 @@ func newTestModuleWithOnDemandProbes(t testing.TB, onDemandHooks []rules.OnDeman
 	if !opts.staticOpts.disableRuntimeSecurity {
 		msgSender := newFakeMsgSender(testMod)
 
-		cws, err := module.NewCWSConsumer(testMod.eventMonitor, secconfig.RuntimeSecurity, module.Opts{EventSender: testMod, MsgSender: msgSender})
+		cws, err := module.NewCWSConsumer(testMod.eventMonitor, secconfig.RuntimeSecurity, nil, module.Opts{EventSender: testMod, MsgSender: msgSender})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create module: %w", err)
 		}
+		// disable containers telemetry
+		cws.PrepareForFunctionalTests()
+
 		testMod.cws = cws
 		testMod.ruleEngine = cws.GetRuleEngine()
 		testMod.msgSender = msgSender
@@ -827,17 +782,6 @@ func newTestModuleWithOnDemandProbes(t testing.TB, onDemandHooks []rules.OnDeman
 		return nil, fmt.Errorf("failed to init module: %w", err)
 	}
 
-	kv, _ := kernel.NewKernelVersion()
-
-	var isRuntimeCompiled bool
-	if p, ok := testMod.eventMonitor.Probe.PlatformProbe.(*sprobe.EBPFProbe); ok {
-		isRuntimeCompiled = p.IsRuntimeCompiled()
-	}
-
-	if os.Getenv("DD_TESTS_RUNTIME_COMPILED") == "1" && secconfig.Probe.RuntimeCompilationEnabled && !isRuntimeCompiled && !kv.IsSuseKernel() {
-		return nil, errors.New("failed to runtime compile module")
-	}
-
 	if opts.staticOpts.preStartCallback != nil {
 		opts.staticOpts.preStartCallback(testMod)
 	}
@@ -852,7 +796,9 @@ func newTestModuleWithOnDemandProbes(t testing.TB, onDemandHooks []rules.OnDeman
 		testMod.RegisterRuleEventHandler(func(e *model.Event, r *rules.Rule) {
 			opts.staticOpts.snapshotRuleMatchHandler(testMod, e, r)
 		})
-		defer testMod.RegisterRuleEventHandler(nil)
+		t.Cleanup(func() {
+			testMod.RegisterRuleEventHandler(nil)
+		})
 	}
 
 	if err := testMod.eventMonitor.Start(); err != nil {
@@ -860,7 +806,7 @@ func newTestModuleWithOnDemandProbes(t testing.TB, onDemandHooks []rules.OnDeman
 	}
 
 	if ruleSetloadedErr.ErrorOrNil() != nil {
-		defer testMod.Close()
+		testMod.Close()
 		return nil, ruleSetloadedErr.ErrorOrNil()
 	}
 
@@ -1053,7 +999,7 @@ func (tm *testModule) Close() {
 var logInitilialized bool
 
 func initLogger() error {
-	logLevel, found := seelog.LogLevelFromString(logLevelStr)
+	logLevel, found := log.LogLevelFromString(logLevelStr)
 	if !found {
 		return fmt.Errorf("invalid log level '%s'", logLevel)
 	}
@@ -1068,20 +1014,20 @@ func initLogger() error {
 	return nil
 }
 
-func swapLogLevel(logLevel seelog.LogLevel) (seelog.LogLevel, error) {
+func swapLogLevel(logLevel log.LogLevel) (log.LogLevel, error) {
 	if logger == nil {
 		logFormat := "[%Date(2006-01-02 15:04:05.000)] [%LEVEL] %Func:%Line %Msg\n"
 
 		var err error
 
-		logger, err = seelog.LoggerFromWriterWithMinLevelAndFormat(os.Stdout, logLevel, logFormat)
+		logger, err = log.LoggerFromWriterWithMinLevelAndFormat(os.Stdout, logLevel, logFormat)
 		if err != nil {
 			return 0, err
 		}
 	}
 	log.SetupLogger(logger, logLevel.String())
 
-	prevLevel, _ := seelog.LogLevelFromString(logLevelStr)
+	prevLevel, _ := log.LogLevelFromString(logLevelStr)
 	logLevelStr = logLevel.String()
 	return prevLevel, nil
 }
@@ -1172,7 +1118,14 @@ func checkKernelCompatibility(tb testing.TB, why string, skipCheck func(kv *kern
 	}
 }
 
-func (tm *testModule) StopActivityDump(name, containerID string) error {
+func checkNetworkCompatibility(tb testing.TB) {
+	checkKernelCompatibility(tb, "network feature", func(kv *kernel.Version) bool {
+		// OpenSUSE distributions are missing the dummy kernel module
+		return sprobe.IsNetworkNotSupported(kv) || kv.IsSLESKernel() || kv.IsOpenSUSELeapKernel()
+	})
+}
+
+func (tm *testModule) StopActivityDump(name string) error {
 	p, ok := tm.probe.PlatformProbe.(*sprobe.EBPFProbe)
 	if !ok {
 		return errors.New("not supported")
@@ -1183,8 +1136,7 @@ func (tm *testModule) StopActivityDump(name, containerID string) error {
 		return errors.New("no manager")
 	}
 	params := &api.ActivityDumpStopParams{
-		Name:        name,
-		ContainerID: containerID,
+		Name: name,
 	}
 	_, err := managers.StopActivityDump(params)
 	if err != nil {
@@ -1195,7 +1147,8 @@ func (tm *testModule) StopActivityDump(name, containerID string) error {
 
 type activityDumpIdentifier struct {
 	Name        string
-	ContainerID string
+	ContainerID containerutils.ContainerID
+	CGroupID    containerutils.CGroupID
 	Timeout     string
 	OutputFiles []string
 }
@@ -1230,7 +1183,8 @@ func (tm *testModule) ListActivityDumps() ([]*activityDumpIdentifier, error) {
 
 		dumps = append(dumps, &activityDumpIdentifier{
 			Name:        dump.Metadata.Name,
-			ContainerID: dump.Metadata.ContainerID,
+			ContainerID: containerutils.ContainerID(dump.Metadata.ContainerID),
+			CGroupID:    containerutils.CGroupID(dump.Metadata.CGroupID),
 			Timeout:     dump.Metadata.Timeout,
 			OutputFiles: files,
 		})
@@ -1289,7 +1243,7 @@ func DecodeSecurityProfile(path string) (*profile.SecurityProfile, error) {
 
 func (tm *testModule) StartADocker() (*dockerCmdWrapper, error) {
 	// we use alpine to use nslookup on some tests, and validate all busybox specificities
-	docker, err := newDockerCmdWrapper(tm.st.Root(), tm.st.Root(), "alpine")
+	docker, err := newDockerCmdWrapper(tm.st.Root(), tm.st.Root(), "alpine", "")
 	if err != nil {
 		return nil, err
 	}
@@ -1300,6 +1254,7 @@ func (tm *testModule) StartADocker() (*dockerCmdWrapper, error) {
 	}
 
 	time.Sleep(1 * time.Second) // a quick sleep to ensure the dump has started
+
 	return docker, nil
 }
 
@@ -1308,7 +1263,7 @@ func (tm *testModule) GetDumpFromDocker(dockerInstance *dockerCmdWrapper) (*acti
 	if err != nil {
 		return nil, err
 	}
-	dump := findLearningContainerID(dumps, dockerInstance.containerID)
+	dump := findLearningContainerID(dumps, containerutils.ContainerID(dockerInstance.containerID))
 	if dump == nil {
 		return nil, errors.New("ContainerID not found on activity dump list")
 	}
@@ -1329,7 +1284,7 @@ func (tm *testModule) StartADockerGetDump() (*dockerCmdWrapper, *activityDumpIde
 }
 
 //nolint:deadcode,unused
-func findLearningContainerID(dumps []*activityDumpIdentifier, containerID string) *activityDumpIdentifier {
+func findLearningContainerID(dumps []*activityDumpIdentifier, containerID containerutils.ContainerID) *activityDumpIdentifier {
 	for _, dump := range dumps {
 		if dump.ContainerID == containerID {
 			return dump
@@ -1586,7 +1541,7 @@ func (tm *testModule) StopAllActivityDumps() error {
 		return nil
 	}
 	for _, dump := range dumps {
-		_ = tm.StopActivityDump(dump.Name, "")
+		_ = tm.StopActivityDump(dump.Name)
 	}
 	dumps, err = tm.ListActivityDumps()
 	if err != nil {
@@ -1660,28 +1615,9 @@ func (tm *testModule) GetADSelector(dumpID *activityDumpIdentifier) (*cgroupMode
 	return &selector, err
 }
 
-// NewTimeoutError returns a new timeout error with the metrics collected during the test
-func (tm *testModule) NewTimeoutError() ErrTimeout {
-	var msg strings.Builder
-
-	msg.WriteString("timeout, details: ")
-	msg.WriteString(GetEBPFStatusMetrics(tm.probe))
-	msg.WriteString(spew.Sdump(ebpftelemetry.GetProbeStats()))
-
-	events := tm.ruleEngine.StopEventCollector()
-	if len(events) != 0 {
-		msg.WriteString("\nevents evaluated:\n")
-
-		for _, event := range events {
-			msg.WriteString(fmt.Sprintf("%s (eval=%v) {\n", event.Type, event.EvalResult))
-			for field, value := range event.Fields {
-				msg.WriteString(fmt.Sprintf("\t%s=%v,\n", field, value))
-			}
-			msg.WriteString("}\n")
-		}
-	}
-
-	return ErrTimeout{msg.String()}
+func (tm *testModule) writePlatformSpecificTimeoutError(b *strings.Builder) {
+	b.WriteString(GetEBPFStatusMetrics(tm.probe))
+	b.WriteString(spew.Sdump(ebpftelemetry.GetProbeStats()))
 }
 
 func (tm *testModule) WaitSignals(tb testing.TB, action func() error, cbs ...func(event *model.Event, rule *rules.Rule) error) {

@@ -26,7 +26,7 @@ import (
 
 	"github.com/DataDog/datadog-agent/test/new-e2e/pkg/e2e"
 	"github.com/DataDog/datadog-agent/test/new-e2e/pkg/environments"
-	awshost "github.com/DataDog/datadog-agent/test/new-e2e/pkg/environments/aws/host"
+	awshost "github.com/DataDog/datadog-agent/test/new-e2e/pkg/provisioners/aws/host"
 	"github.com/DataDog/datadog-agent/test/new-e2e/tests/agent-shared-components/secretsutils"
 )
 
@@ -468,17 +468,24 @@ func (v *apiSuite) TestDefaultAgentAPIEndpoints() {
 			},
 			expectedCode: 200,
 			assert: func(ct *assert.CollectT, e agentEndpointInfo, resp *http.Response) {
-				type Diagnose struct {
-					Suite string `json:"SuiteName"`
+				type Diagnoses struct {
+					SuiteName string `json:"suite_name"`
 				}
-				var have []Diagnose
+
+				// DiagnoseResult contains the results of the diagnose command
+				type DiagnoseResult struct {
+					Diagnoses []Diagnoses `json:"runs"`
+				}
+
+				var have DiagnoseResult
 
 				body, err := io.ReadAll(resp.Body)
 				assert.NoError(ct, err, "failed to read body from request")
 
 				err = json.Unmarshal(body, &have)
 				assert.NoError(ct, err)
-				assert.NotZero(ct, len(have), "%s %s returned: %s, expected diagnose suites to be present", e.method, e.endpoint, body)
+				assert.NotNil(ct, have)
+				assert.NotZero(ct, len(have.Diagnoses), "%s %s returned: %s, expected diagnose suites to be present", e.method, e.endpoint, body)
 			},
 		},
 	}

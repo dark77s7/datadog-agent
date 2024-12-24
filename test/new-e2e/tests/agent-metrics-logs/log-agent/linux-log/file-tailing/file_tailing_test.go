@@ -18,7 +18,7 @@ import (
 
 	"github.com/DataDog/datadog-agent/test/new-e2e/pkg/e2e"
 	"github.com/DataDog/datadog-agent/test/new-e2e/pkg/environments"
-	awshost "github.com/DataDog/datadog-agent/test/new-e2e/pkg/environments/aws/host"
+	awshost "github.com/DataDog/datadog-agent/test/new-e2e/pkg/provisioners/aws/host"
 	"github.com/DataDog/datadog-agent/test/new-e2e/tests/agent-metrics-logs/log-agent/utils"
 )
 
@@ -35,8 +35,8 @@ const (
 	logFilePath = utils.LinuxLogsFolderPath + "/" + logFileName
 )
 
-// TestE2EVMFakeintakeSuite runs the E2E test suite for the log agent with a VM and fake intake.
-func TestE2EVMFakeintakeSuite(t *testing.T) {
+// TestLinuxVMFileTailingSuite runs the E2E test suite for the log agent with a Linux VM and fake intake.
+func TestLinuxVMFileTailingSuite(t *testing.T) {
 	options := []e2e.SuiteOption{
 		e2e.WithProvisioner(
 			awshost.Provisioner(

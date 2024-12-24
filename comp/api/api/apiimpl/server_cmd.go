@@ -7,8 +7,6 @@ package apiimpl
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"fmt"
 	"net/http"
 	"time"
@@ -22,9 +20,10 @@ import (
 	"github.com/DataDog/datadog-agent/comp/api/api/apiimpl/internal/agent"
 	"github.com/DataDog/datadog-agent/comp/api/api/apiimpl/internal/check"
 	"github.com/DataDog/datadog-agent/comp/api/api/apiimpl/observability"
-	taggerserver "github.com/DataDog/datadog-agent/comp/core/tagger/taggerimpl/server"
+	"github.com/DataDog/datadog-agent/comp/core/config"
+	taggerserver "github.com/DataDog/datadog-agent/comp/core/tagger/server"
 	workloadmetaServer "github.com/DataDog/datadog-agent/comp/core/workloadmeta/server"
-	"github.com/DataDog/datadog-agent/pkg/config"
+	pkgconfigsetup "github.com/DataDog/datadog-agent/pkg/config/setup"
 	pb "github.com/DataDog/datadog-agent/pkg/proto/pbgo/core"
 	grpcutil "github.com/DataDog/datadog-agent/pkg/util/grpc"
 )
@@ -34,9 +33,8 @@ const cmdServerShortName string = "CMD"
 
 func (server *apiServer) startCMDServer(
 	cmdAddr string,
-	tlsConfig *tls.Config,
-	tlsCertPool *x509.CertPool,
 	tmf observability.TelemetryMiddlewareFactory,
+	cfg config.Component,
 ) (err error) {
 	// get the transport we're going to use under HTTP
 	server.cmdListener, err = getListener(cmdAddr)
@@ -48,31 +46,36 @@ func (server *apiServer) startCMDServer(
 
 	// gRPC server
 	authInterceptor := grpcutil.AuthInterceptor(parseToken)
+
+	maxMessageSize := cfg.GetInt("cluster_agent.cluster_tagger.grpc_max_message_size")
+
 	opts := []grpc.ServerOption{
-		grpc.Creds(credentials.NewClientTLSFromCert(tlsCertPool, cmdAddr)),
+		grpc.Creds(credentials.NewTLS(server.authToken.GetTLSServerConfig())),
 		grpc.StreamInterceptor(grpc_auth.StreamServerInterceptor(authInterceptor)),
 		grpc.UnaryInterceptor(grpc_auth.UnaryServerInterceptor(authInterceptor)),
+		grpc.MaxRecvMsgSize(maxMessageSize),
+		grpc.MaxSendMsgSize(maxMessageSize),
 	}
 
+	// event size should be small enough to fit within the grpc max message size
+	maxEventSize := maxMessageSize / 2
 	s := grpc.NewServer(opts...)
 	pb.RegisterAgentServer(s, &grpcServer{})
 	pb.RegisterAgentSecureServer(s, &serverSecure{
 		configService:    server.rcService,
 		configServiceMRF: server.rcServiceMRF,
-		taggerServer:     taggerserver.NewServer(server.taggerComp),
+		taggerServer:     taggerserver.NewServer(server.taggerComp, maxEventSize),
 		taggerComp:       server.taggerComp,
 		// TODO(components): decide if workloadmetaServer should be componentized itself
-		workloadmetaServer: workloadmetaServer.NewServer(server.wmeta),
-		dogstatsdServer:    server.dogstatsdServer,
-		capture:            server.capture,
-		pidMap:             server.pidMap,
+		workloadmetaServer:  workloadmetaServer.NewServer(server.wmeta),
+		dogstatsdServer:     server.dogstatsdServer,
+		capture:             server.capture,
+		pidMap:              server.pidMap,
+		remoteAgentRegistry: server.remoteAgentRegistry,
+		autodiscovery:       server.autoConfig,
 	})
 
-	dcreds := credentials.NewTLS(&tls.Config{
-		ServerName: cmdAddr,
-		RootCAs:    tlsCertPool,
-	})
-	dopts := []grpc.DialOption{grpc.WithTransportCredentials(dcreds)}
+	dopts := []grpc.DialOption{grpc.WithTransportCredentials(credentials.NewTLS(server.authToken.GetTLSClientConfig()))}
 
 	// starting grpc gateway
 	ctx := context.Background()
@@ -111,6 +114,7 @@ func (server *apiServer) startCMDServer(
 				server.collector,
 				server.autoConfig,
 				server.endpointProviders,
+				server.taggerComp,
 			)))
 	cmdMux.Handle("/check/", http.StripPrefix("/check", check.SetupHandlers(checkMux)))
 	cmdMux.Handle("/", gwmux)
@@ -121,9 +125,9 @@ func (server *apiServer) startCMDServer(
 
 	srv := grpcutil.NewMuxedGRPCServer(
 		cmdAddr,
-		tlsConfig,
+		server.authToken.GetTLSServerConfig(),
 		s,
-		grpcutil.TimeoutHandlerFunc(cmdMuxHandler, time.Duration(config.Datadog().GetInt64("server_timeout"))*time.Second),
+		grpcutil.TimeoutHandlerFunc(cmdMuxHandler, time.Duration(pkgconfigsetup.Datadog().GetInt64("server_timeout"))*time.Second),
 	)
 
 	startServer(server.cmdListener, srv, cmdServerName)

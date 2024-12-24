@@ -18,13 +18,6 @@ import (
 	"github.com/DataDog/datadog-agent/pkg/util/scrubber"
 )
 
-// CGroupContextSerializer serializes a cgroup context to JSON
-// easyjson:json
-type CGroupContextSerializer struct {
-	// CGroup ID
-	ID string `json:"id,omitempty"`
-}
-
 // ContainerContextSerializer serializes a container context to JSON
 // easyjson:json
 type ContainerContextSerializer struct {
@@ -192,15 +185,6 @@ type DNSEventSerializer struct {
 	Question DNSQuestionSerializer `json:"question"`
 }
 
-// DDContextSerializer serializes a span context to JSON
-// easyjson:json
-type DDContextSerializer struct {
-	// Span ID used for APM correlation
-	SpanID uint64 `json:"span_id,omitempty"`
-	// Trace ID used for APM correlation
-	TraceID uint64 `json:"trace_id,omitempty"`
-}
-
 // ExitEventSerializer serializes an exit event to JSON
 // easyjson:json
 type ExitEventSerializer struct {
@@ -220,7 +204,20 @@ type BaseEventSerializer struct {
 	*ExitEventSerializer        `json:"exit,omitempty"`
 	*ProcessContextSerializer   `json:"process,omitempty"`
 	*ContainerContextSerializer `json:"container,omitempty"`
-	*CGroupContextSerializer    `json:"cgroup,omitempty"`
+}
+
+// TLSContextSerializer defines a tls context serializer
+// easyjson:json
+type TLSContextSerializer struct {
+	Version string `json:"version,omitempty"`
+}
+
+// RawPacketSerializer defines a raw packet serializer
+// easyjson:json
+type RawPacketSerializer struct {
+	*NetworkContextSerializer
+
+	TLSContext *TLSContextSerializer `json:"tls,omitempty"`
 }
 
 func newMatchedRulesSerializer(r *model.MatchedRule) MatchedRuleSerializer {

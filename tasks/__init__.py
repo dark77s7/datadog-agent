@@ -9,6 +9,7 @@ from invoke import Collection, Task
 
 from tasks import (
     agent,
+    ami,
     bench,
     buildimages,
     cluster_agent,
@@ -18,6 +19,7 @@ from tasks import (
     coverage,
     cws_instrumentation,
     debug,
+    debugging,
     devcontainer,
     diff,
     docker_tasks,
@@ -33,13 +35,16 @@ from tasks import (
     go_deps,
     installer,
     invoke_unit_tests,
+    issue,
     kmt,
     linter,
     modules,
     msi,
     new_e2e_tests,
+    notes,
     notify,
     omnibus,
+    oracle,
     otel_agent,
     owners,
     package,
@@ -58,6 +63,8 @@ from tasks import (
     trace_agent,
     vim,
     vscode,
+    winbuild,
+    worktree,
 )
 from tasks.build_tags import audit_tag_impact, print_default_build_tags
 from tasks.components import lint_components, lint_fxutil_oneshot_test
@@ -80,20 +87,25 @@ from tasks.go import (
     tidy,
     tidy_all,
 )
+from tasks.gointegrationtest import integration_tests
 from tasks.gotest import (
     check_otel_build,
     check_otel_module_versions,
     e2e_tests,
     get_impacted_packages,
     get_modified_packages,
-    integration_tests,
     lint_go,
     send_unit_tests_stats,
     test,
 )
-from tasks.install_tasks import download_tools, install_devcontainer_cli, install_shellcheck, install_tools
+from tasks.install_tasks import (
+    download_tools,
+    install_devcontainer_cli,
+    install_protoc,
+    install_shellcheck,
+    install_tools,
+)
 from tasks.junit_tasks import junit_upload
-from tasks.libs.common.go_workspaces import handle_go_work
 from tasks.show_linters_issues.show_linters_issues import show_linters_issues
 from tasks.update_go import go_version, update_go
 from tasks.windows_resources import build_messagetable
@@ -121,6 +133,7 @@ ns.add_task(audit_tag_impact)
 ns.add_task(print_default_build_tags)
 ns.add_task(e2e_tests)
 ns.add_task(install_shellcheck)
+ns.add_task(install_protoc)
 ns.add_task(install_devcontainer_cli)
 ns.add_task(download_tools)
 ns.add_task(install_tools)
@@ -146,11 +159,13 @@ ns.add_task(lint_go)
 
 # add namespaced tasks to the root
 ns.add_collection(agent)
+ns.add_collection(ami)
 ns.add_collection(buildimages)
 ns.add_collection(cluster_agent)
 ns.add_collection(cluster_agent_cloudfoundry)
 ns.add_collection(components)
 ns.add_collection(coverage)
+ns.add_collection(debugging)
 ns.add_collection(docs)
 ns.add_collection(bench)
 ns.add_collection(trace_agent)
@@ -166,9 +181,12 @@ ns.add_collection(msi)
 ns.add_collection(git)
 ns.add_collection(github_tasks, "github")
 ns.add_collection(gitlab_helpers, "gitlab")
+ns.add_collection(issue)
 ns.add_collection(package)
 ns.add_collection(pipeline)
+ns.add_collection(notes)
 ns.add_collection(notify)
+ns.add_collection(oracle)
 ns.add_collection(otel_agent)
 ns.add_collection(sds)
 ns.add_collection(selinux)
@@ -195,6 +213,8 @@ ns.add_collection(omnibus)
 ns.add_collection(collector)
 ns.add_collection(invoke_unit_tests)
 ns.add_collection(debug)
+ns.add_collection(winbuild)
+ns.add_collection(worktree)
 ns.configure(
     {
         "run": {
@@ -204,6 +224,3 @@ ns.configure(
         }
     }
 )
-
-# disable go workspaces by default
-handle_go_work()

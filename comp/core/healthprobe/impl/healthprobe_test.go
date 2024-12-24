@@ -4,7 +4,7 @@
 // Copyright 2024-present Datadog, Inc.
 
 // Package impl implements the healthprobe component interface
-package impl
+package healthprobeimpl
 
 import (
 	"context"
@@ -13,16 +13,17 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+
 	healthprobeComponent "github.com/DataDog/datadog-agent/comp/core/healthprobe/def"
 	logmock "github.com/DataDog/datadog-agent/comp/core/log/mock"
 	compdef "github.com/DataDog/datadog-agent/comp/def"
 	"github.com/DataDog/datadog-agent/pkg/status/health"
-	"github.com/stretchr/testify/assert"
 )
 
 func TestServer(t *testing.T) {
 
-	lc := compdef.NewTestLifecycle()
+	lc := compdef.NewTestLifecycle(t)
 	logComponent := logmock.New(t)
 
 	requires := Requires{
@@ -40,13 +41,14 @@ func TestServer(t *testing.T) {
 	assert.NotNil(t, provides.Comp)
 
 	ctx := context.Background()
-	assert.NoError(t, lc.Start(ctx))
 
+	lc.AssertHooksNumber(1)
+	assert.NoError(t, lc.Start(ctx))
 	assert.NoError(t, lc.Stop(ctx))
 }
 
 func TestServerNoHealthPort(t *testing.T) {
-	lc := compdef.NewTestLifecycle()
+	lc := compdef.NewTestLifecycle(t)
 	logComponent := logmock.New(t)
 
 	requires := Requires{

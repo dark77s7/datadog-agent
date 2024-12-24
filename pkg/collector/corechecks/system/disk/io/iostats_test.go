@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shirou/gopsutil/v3/disk"
-	"github.com/shirou/gopsutil/v3/mem"
+	"github.com/shirou/gopsutil/v4/disk"
+	"github.com/shirou/gopsutil/v4/mem"
 
 	"github.com/DataDog/datadog-agent/comp/core/autodiscovery/integration"
 	"github.com/DataDog/datadog-agent/pkg/aggregator"
@@ -99,7 +99,7 @@ func SwapMemory() (*mem.SwapMemoryStat, error) {
 }
 
 //nolint:revive // TODO(PLINT) Fix revive linter
-func sampler(samples []map[string]disk.IOCountersStat, names ...string) (map[string]disk.IOCountersStat, error) {
+func sampler(samples []map[string]disk.IOCountersStat, _ ...string) (map[string]disk.IOCountersStat, error) {
 	idx := sampleIdx
 	sampleIdx++
 	sampleIdx = sampleIdx % len(samples)
@@ -107,7 +107,7 @@ func sampler(samples []map[string]disk.IOCountersStat, names ...string) (map[str
 }
 
 //nolint:revive // TODO(PLINT) Fix revive linter
-func TestIOCheckDM(t *testing.T) {
+func TestIOCheckDM(_ *testing.T) {
 	ioCounters = ioSamplerDM
 	swapMemory = SwapMemory
 	ioCheck := new(IOCheck)

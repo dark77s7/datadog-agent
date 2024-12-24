@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shirou/gopsutil/v3/cpu"
+	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -20,6 +20,17 @@ import (
 
 	"github.com/DataDog/datadog-agent/pkg/process/procutil"
 )
+
+// Returns chunking and no chunking RunOptions
+func getChunkingOption(noChunking bool) *RunOptions {
+	return &RunOptions{RunStandard: true, NoChunking: noChunking}
+}
+
+func testGroupID(groupID int32) func() int32 {
+	return func() int32 {
+		return groupID
+	}
+}
 
 //nolint:deadcode,unused
 func procsToHash(procs []*procutil.Process) (procsByPid map[int32]*procutil.Process) {

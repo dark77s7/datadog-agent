@@ -25,7 +25,7 @@ import (
 	"time"
 
 	"github.com/DataDog/datadog-agent/pkg/compliance/utils"
-	"github.com/shirou/gopsutil/v3/process"
+	"github.com/shirou/gopsutil/v4/process"
 	"gopkg.in/yaml.v3"
 )
 
@@ -669,7 +669,11 @@ func buildProc(name string, cmdline []string) proc {
 		p.flags = make(map[string]string)
 		pendingFlagValue := false
 		for i, arg := range cmdline {
-			if strings.HasPrefix(arg, "-") {
+			if strings.HasPrefix(arg, "--") && len(arg) > 2 {
+				if pendingFlagValue {
+					p.flags[cmdline[i-1]] = "true"
+				}
+				pendingFlagValue = false
 				parts := strings.SplitN(arg, "=", 2)
 				if len(parts) == 2 {
 					p.flags[parts[0]] = parts[1]
@@ -684,6 +688,9 @@ func buildProc(name string, cmdline []string) proc {
 					p.flags[arg] = ""
 				}
 			}
+		}
+		if pendingFlagValue {
+			p.flags[cmdline[len(cmdline)-1]] = "true"
 		}
 	}
 	return p

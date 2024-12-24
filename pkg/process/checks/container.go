@@ -6,18 +6,19 @@
 package checks
 
 import (
-	"context"
 	"fmt"
+	"math"
+	"net/http"
 	"sync"
 	"time"
 
 	model "github.com/DataDog/agent-payload/v5/process"
 
+	"github.com/DataDog/datadog-agent/cmd/system-probe/api/client"
 	workloadmeta "github.com/DataDog/datadog-agent/comp/core/workloadmeta/def"
-	ddconfig "github.com/DataDog/datadog-agent/pkg/config"
+	pkgconfigmodel "github.com/DataDog/datadog-agent/pkg/config/model"
 	"github.com/DataDog/datadog-agent/pkg/process/statsd"
 	proccontainers "github.com/DataDog/datadog-agent/pkg/process/util/containers"
-	"github.com/DataDog/datadog-agent/pkg/util/cloudproviders"
 	"github.com/DataDog/datadog-agent/pkg/util/flavor"
 	"github.com/DataDog/datadog-agent/pkg/util/log"
 )
@@ -27,7 +28,7 @@ const (
 )
 
 // NewContainerCheck returns an instance of the ContainerCheck.
-func NewContainerCheck(config ddconfig.Reader, wmeta workloadmeta.Component) *ContainerCheck {
+func NewContainerCheck(config pkgconfigmodel.Reader, wmeta workloadmeta.Component) *ContainerCheck {
 	return &ContainerCheck{
 		config: config,
 		wmeta:  wmeta,
@@ -38,7 +39,7 @@ func NewContainerCheck(config ddconfig.Reader, wmeta workloadmeta.Component) *Co
 type ContainerCheck struct {
 	sync.Mutex
 
-	config ddconfig.Reader
+	config pkgconfigmodel.Reader
 
 	hostInfo          *HostInfo
 	containerProvider proccontainers.ContainerProvider
@@ -49,14 +50,24 @@ type ContainerCheck struct {
 
 	maxBatchSize int
 	wmeta        workloadmeta.Component
+
+	sysprobeClient *http.Client
 }
 
 // Init initializes a ContainerCheck instance.
-func (c *ContainerCheck) Init(_ *SysProbeConfig, info *HostInfo, _ bool) error {
-	c.containerProvider = proccontainers.GetSharedContainerProvider(c.wmeta)
+func (c *ContainerCheck) Init(syscfg *SysProbeConfig, info *HostInfo, _ bool) error {
+	sharedContainerProvider, err := proccontainers.GetSharedContainerProvider()
+	if err != nil {
+		return err
+	}
+	c.containerProvider = sharedContainerProvider
 	c.hostInfo = info
 
-	networkID, err := cloudproviders.GetNetworkID(context.TODO())
+	if syscfg.NetworkTracerModuleEnabled {
+		c.sysprobeClient = client.Get(syscfg.SystemProbeAddress)
+	}
+
+	networkID, err := retryGetNetworkID(c.sysprobeClient)
 	if err != nil {
 		log.Infof("no network ID detected: %s", err)
 	}
@@ -119,6 +130,12 @@ func (c *ContainerCheck) Run(nextGroupID func() int32, options *RunOptions) (Run
 	if len(containers)%c.maxBatchSize != 0 {
 		groupSize++
 	}
+
+	// For no chunking, set groupsize as 1 to ensure one chunk
+	if options != nil && options.NoChunking {
+		groupSize = 1
+	}
+
 	chunked := chunkContainers(containers, groupSize)
 	messages := make([]model.MessageBody, 0, groupSize)
 	groupID := nextGroupID()
@@ -146,7 +163,7 @@ func (c *ContainerCheck) Cleanup() {}
 
 // chunkContainers formats and chunks the ctrList into a slice of chunks using a specific number of chunks.
 func chunkContainers(containers []*model.Container, chunks int) [][]*model.Container {
-	perChunk := (len(containers) / chunks) + 1
+	perChunk := int(math.Ceil(float64(len(containers)) / float64(chunks)))
 	chunked := make([][]*model.Container, 0, chunks)
 	chunk := make([]*model.Container, 0, perChunk)
 

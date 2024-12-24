@@ -20,7 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/DataDog/datadog-agent/test/new-e2e/pkg/e2e"
-	"github.com/DataDog/datadog-agent/test/new-e2e/pkg/runner"
+	"github.com/DataDog/datadog-agent/test/new-e2e/pkg/utils/common"
 	"github.com/DataDog/datadog-agent/test/new-e2e/pkg/utils/e2e/client/agentclient"
 	"github.com/DataDog/datadog-agent/test/new-e2e/pkg/utils/e2e/client/agentclientparams"
 )
@@ -30,7 +30,7 @@ const (
 )
 
 // NewHostAgentClient creates an Agent client for host install
-func NewHostAgentClient(context e2e.Context, hostOutput remote.HostOutput, waitForAgentReady bool) (agentclient.Agent, error) {
+func NewHostAgentClient(context common.Context, hostOutput remote.HostOutput, waitForAgentReady bool) (agentclient.Agent, error) {
 	params := agentclientparams.NewParams(hostOutput.OSFamily)
 	params.ShouldWaitForReady = waitForAgentReady
 
@@ -52,7 +52,7 @@ func NewHostAgentClient(context e2e.Context, hostOutput remote.HostOutput, waitF
 }
 
 // NewHostAgentClientWithParams creates an Agent client for host install with custom parameters
-func NewHostAgentClientWithParams(context e2e.Context, hostOutput remote.HostOutput, options ...agentclientparams.Option) (agentclient.Agent, error) {
+func NewHostAgentClientWithParams(context common.Context, hostOutput remote.HostOutput, options ...agentclientparams.Option) (agentclient.Agent, error) {
 	params := agentclientparams.NewParams(hostOutput.OSFamily, options...)
 
 	host, err := NewHost(context, hostOutput)
@@ -75,7 +75,7 @@ func NewHostAgentClientWithParams(context e2e.Context, hostOutput remote.HostOut
 }
 
 // NewDockerAgentClient creates an Agent client for a Docker install
-func NewDockerAgentClient(context e2e.Context, dockerAgentOutput agent.DockerAgentOutput, options ...agentclientparams.Option) (agentclient.Agent, error) {
+func NewDockerAgentClient(context common.Context, dockerAgentOutput agent.DockerAgentOutput, options ...agentclientparams.Option) (agentclient.Agent, error) {
 	params := agentclientparams.NewParams(dockerAgentOutput.DockerManager.Host.OSFamily, options...)
 	ae := newAgentDockerExecutor(context, dockerAgentOutput)
 	commandRunner := newAgentCommandRunner(context.T(), ae)
@@ -127,7 +127,7 @@ func waitForAgentsReady(tt *testing.T, host *Host, params *agentclientparams.Par
 }
 
 func processAgentRequest(params *agentclientparams.Params, host *Host) (*http.Request, bool, error) {
-	return makeStatusEndpointRequest(params, host, "http://localhost:%d/agent/status", params.ProcessAgentPort)
+	return makeStatusEndpointRequest(params, host, "https://localhost:%d/agent/status", params.ProcessAgentPort)
 }
 
 func traceAgentRequest(params *agentclientparams.Params, host *Host) (*http.Request, bool, error) {
@@ -197,13 +197,15 @@ func waitForReadyTimeout(t *testing.T, host *Host, commandRunner *agentCommandRu
 }
 
 func generateAndDownloadFlare(t *testing.T, commandRunner *agentCommandRunner, host *Host) error {
-	profile := runner.GetProfile()
-	outputDir, err := profile.GetOutputDir()
-	flareFound := false
-
+	root, err := e2e.CreateRootOutputDir()
 	if err != nil {
-		return fmt.Errorf("could not get output directory: %v", err)
+		return fmt.Errorf("could not get root output directory: %w", err)
 	}
+	outputDir, err := e2e.CreateTestOutputDir(root, t)
+	if err != nil {
+		return fmt.Errorf("could not get output directory: %w", err)
+	}
+	flareFound := false
 
 	_, err = commandRunner.FlareWithError(agentclient.WithArgs([]string{"--email", "e2e@test.com", "--send", "--local"}))
 	if err != nil {
@@ -213,17 +215,17 @@ func generateAndDownloadFlare(t *testing.T, commandRunner *agentCommandRunner, h
 
 	flareRegex, err := regexp.Compile(`datadog-agent-.*\.zip`)
 	if err != nil {
-		return fmt.Errorf("could not compile regex: %v", err)
+		return fmt.Errorf("could not compile regex: %w", err)
 	}
 
 	tmpFolder, err := host.GetTmpFolder()
 	if err != nil {
-		return fmt.Errorf("could not get tmp folder: %v", err)
+		return fmt.Errorf("could not get tmp folder: %w", err)
 	}
 
 	entries, err := host.ReadDir(tmpFolder)
 	if err != nil {
-		return fmt.Errorf("could not read directory: %v", err)
+		return fmt.Errorf("could not read directory: %w", err)
 	}
 
 	for _, entry := range entries {
@@ -233,7 +235,7 @@ func generateAndDownloadFlare(t *testing.T, commandRunner *agentCommandRunner, h
 			if host.osFamily != osComp.WindowsFamily {
 				_, err = host.Execute(fmt.Sprintf("sudo chmod 744 %s/%s", tmpFolder, entry.Name()))
 				if err != nil {
-					return fmt.Errorf("could not update permission of flare file %s/%s : %v", tmpFolder, entry.Name(), err)
+					return fmt.Errorf("could not update permission of flare file %s/%s : %w", tmpFolder, entry.Name(), err)
 				}
 			}
 
@@ -241,7 +243,7 @@ func generateAndDownloadFlare(t *testing.T, commandRunner *agentCommandRunner, h
 			err = host.GetFile(fmt.Sprintf("%s/%s", tmpFolder, entry.Name()), fmt.Sprintf("%s/%s", outputDir, entry.Name()))
 
 			if err != nil {
-				return fmt.Errorf("could not download flare file from %s/%s : %v", tmpFolder, entry.Name(), err)
+				return fmt.Errorf("could not download flare file from %s/%s : %w", tmpFolder, entry.Name(), err)
 			}
 
 			flareFound = true
@@ -253,13 +255,13 @@ func generateAndDownloadFlare(t *testing.T, commandRunner *agentCommandRunner, h
 
 		logsFolder, err := host.GetLogsFolder()
 		if err != nil {
-			return fmt.Errorf("could not get logs folder: %v", err)
+			return fmt.Errorf("could not get logs folder: %w", err)
 		}
 
 		entries, err = host.ReadDir(logsFolder)
 
 		if err != nil {
-			return fmt.Errorf("could not read directory: %v", err)
+			return fmt.Errorf("could not read directory: %w", err)
 		}
 
 		for _, entry := range entries {
@@ -267,7 +269,7 @@ func generateAndDownloadFlare(t *testing.T, commandRunner *agentCommandRunner, h
 
 			err = host.GetFile(fmt.Sprintf("%s/%s", logsFolder, entry.Name()), fmt.Sprintf("%s/%s", outputDir, entry.Name()))
 			if err != nil {
-				return fmt.Errorf("could not download log file from %s/%s : %v", logsFolder, entry.Name(), err)
+				return fmt.Errorf("could not download log file from %s/%s : %w", logsFolder, entry.Name(), err)
 			}
 		}
 	}

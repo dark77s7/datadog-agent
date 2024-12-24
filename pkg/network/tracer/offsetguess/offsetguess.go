@@ -9,11 +9,8 @@ package offsetguess
 
 import (
 	"fmt"
-	"math"
 	"sync"
 	"time"
-
-	"golang.org/x/sys/unix"
 
 	manager "github.com/DataDog/ebpf-manager"
 
@@ -83,8 +80,7 @@ var whatString = map[GuessWhat]string{
 	GuessCtNet:         "conntrack network namespace",
 }
 
-//nolint:revive // TODO(NET) Fix revive linter
-type OffsetGuesser interface {
+type OffsetGuesser interface { //nolint:revive // TODO
 	Manager() *manager.Manager
 	Probes(c *config.Config) (map[string]struct{}, error)
 	Guess(c *config.Config) ([]manager.ConstantEditor, error)
@@ -157,10 +153,7 @@ func setupOffsetGuesser(guesser OffsetGuesser, config *config.Config, buf byteco
 	// Enable kernel probes used for offset guessing.
 	offsetMgr := guesser.Manager()
 	offsetOptions := manager.Options{
-		RLimit: &unix.Rlimit{
-			Cur: math.MaxUint64,
-			Max: math.MaxUint64,
-		},
+		RemoveRlimit: true,
 	}
 	enabledProbes, err := guesser.Probes(config)
 	if err != nil {
@@ -193,8 +186,7 @@ func setupOffsetGuesser(guesser OffsetGuesser, config *config.Config, buf byteco
 	return nil
 }
 
-//nolint:revive // TODO(NET) Fix revive linter
-func RunOffsetGuessing(cfg *config.Config, buf bytecode.AssetReader, newGuesser func() (OffsetGuesser, error)) (editors []manager.ConstantEditor, err error) {
+func RunOffsetGuessing(cfg *config.Config, buf bytecode.AssetReader, newGuesser func() (OffsetGuesser, error)) (editors []manager.ConstantEditor, err error) { //nolint:revive // TODO
 	// Offset guessing has been flaky for some customers, so if it fails we'll retry it up to 5 times
 	start := time.Now()
 	for i := 0; i < 5; i++ {

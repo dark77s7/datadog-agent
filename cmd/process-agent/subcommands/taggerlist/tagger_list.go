@@ -17,12 +17,13 @@ import (
 	"github.com/DataDog/datadog-agent/comp/core"
 	"github.com/DataDog/datadog-agent/comp/core/config"
 	log "github.com/DataDog/datadog-agent/comp/core/log/def"
-	"github.com/DataDog/datadog-agent/comp/core/tagger/taggerimpl/api"
-	ddconfig "github.com/DataDog/datadog-agent/pkg/config"
+	"github.com/DataDog/datadog-agent/comp/core/tagger/api"
+	"github.com/DataDog/datadog-agent/pkg/api/util"
+	pkgconfigsetup "github.com/DataDog/datadog-agent/pkg/config/setup"
 	"github.com/DataDog/datadog-agent/pkg/util/fxutil"
 )
 
-const taggerListURLTpl = "http://%s/agent/tagger-list"
+const taggerListURLTpl = "https://%s/agent/tagger-list"
 
 // Commands returns a slice of subcommands for the `tagger-list` command in the Process Agent
 func Commands(globalParams *command.GlobalParams) []*cobra.Command {
@@ -30,7 +31,7 @@ func Commands(globalParams *command.GlobalParams) []*cobra.Command {
 		Use:   "tagger-list",
 		Short: "Print the tagger content of a running agent",
 		Long:  "",
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, _ []string) error {
 			return fxutil.OneShot(taggerList,
 				fx.Supply(command.GetCoreBundleParamsForOneShot(globalParams)),
 
@@ -58,11 +59,15 @@ func taggerList(deps dependencies) error {
 		return err
 	}
 
+	err = util.SetAuthToken(deps.Config)
+	if err != nil {
+		return err
+	}
 	return api.GetTaggerList(color.Output, taggerURL)
 }
 
 func getTaggerURL() (string, error) {
-	addressPort, err := ddconfig.GetProcessAPIAddressPort()
+	addressPort, err := pkgconfigsetup.GetProcessAPIAddressPort(pkgconfigsetup.Datadog())
 	if err != nil {
 		return "", fmt.Errorf("config error: %s", err.Error())
 	}

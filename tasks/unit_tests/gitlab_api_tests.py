@@ -1,15 +1,23 @@
 import unittest
+from collections import OrderedDict
 from unittest.mock import MagicMock, patch
 
+import yaml
 from invoke import MockContext, Result
 
 from tasks.libs.ciproviders.gitlab_api import (
     GitlabCIDiff,
+    MultiGitlabCIDiff,
+    ReferenceTag,
     clean_gitlab_ci_configuration,
+    expand_matrix_jobs,
     filter_gitlab_ci_configuration,
+    find_buildimages,
     gitlab_configuration_is_modified,
     read_includes,
     retrieve_all_paths,
+    update_gitlab_config,
+    update_image_tag,
 )
 
 
@@ -168,12 +176,55 @@ class TestGitlabCiDiff(unittest.TestCase):
                 'script': 'echo "???"',
             },
         }
-        diff = GitlabCIDiff(before, after)
+        diff = GitlabCIDiff.from_contents(before, after)
         self.assertSetEqual(diff.modified, {'job1'})
         self.assertSetEqual(set(diff.modified_diffs.keys()), {'job1'})
         self.assertSetEqual(diff.removed, {'job4'})
         self.assertSetEqual(diff.added, {'job5'})
         self.assertSetEqual(diff.renamed, {('job2', 'job2_renamed')})
+
+    def test_serialization(self):
+        before = {
+            'job1': {
+                'script': [
+                    'echo "hello"',
+                    'echo "hello?"',
+                    'echo "hello!"',
+                ]
+            },
+            'job2': {
+                'script': 'echo "world"',
+            },
+            'job3': {
+                'script': 'echo "!"',
+            },
+            'job4': {
+                'script': 'echo "?"',
+            },
+        }
+        after = {
+            'job1': {
+                'script': [
+                    'echo "hello"',
+                    'echo "bonjour?"',
+                    'echo "hello!"',
+                ]
+            },
+            'job2_renamed': {
+                'script': 'echo "world"',
+            },
+            'job3': {
+                'script': 'echo "!"',
+            },
+            'job5': {
+                'script': 'echo "???"',
+            },
+        }
+        diff = MultiGitlabCIDiff.from_contents({'file': before}, {'file': after})
+        dict_diff = diff.to_dict()
+        diff_from_dict = MultiGitlabCIDiff.from_dict(dict_diff)
+
+        self.assertDictEqual(diff_from_dict.before, diff.before)
 
 
 class TestRetrieveAllPaths(unittest.TestCase):
@@ -197,6 +248,154 @@ class TestRetrieveAllPaths(unittest.TestCase):
             'hand_of_the_king',
         ]
         self.assertListEqual(paths, expected_paths)
+
+
+class TestExpandMatrixJobs(unittest.TestCase):
+    def test_single(self):
+        yml = {
+            'job': {
+                'script': 'echo hello',
+                'parallel': {
+                    'matrix': [
+                        {
+                            'VAR1': 'a',
+                        },
+                        {
+                            'VAR1': 'b',
+                        },
+                    ]
+                },
+            }
+        }
+        expected_yml = {
+            'job: [a]': {'script': 'echo hello', 'variables': {'VAR1': 'a'}},
+            'job: [b]': {'script': 'echo hello', 'variables': {'VAR1': 'b'}},
+        }
+
+        res = expand_matrix_jobs(yml)
+
+        self.assertDictEqual(res, expected_yml)
+
+    def test_single2(self):
+        yml = {
+            'job': {
+                'script': 'echo hello',
+                'parallel': {
+                    'matrix': [
+                        # Used OrderedDict to ensure order is preserved and the name is deterministic
+                        OrderedDict(
+                            [
+                                ('VAR1', 'a'),
+                                ('VAR2', 'b'),
+                            ]
+                        ),
+                        OrderedDict(
+                            [
+                                ('VAR1', 'c'),
+                                ('VAR2', 'd'),
+                            ]
+                        ),
+                    ]
+                },
+            }
+        }
+        expected_yml = {
+            'job: [a, b]': {'script': 'echo hello', 'variables': {'VAR1': 'a', 'VAR2': 'b'}},
+            'job: [c, d]': {'script': 'echo hello', 'variables': {'VAR1': 'c', 'VAR2': 'd'}},
+        }
+
+        res = expand_matrix_jobs(yml)
+
+        self.assertDictEqual(res, expected_yml)
+
+    def test_multiple(self):
+        yml = {
+            'job': {
+                'script': 'echo hello',
+                'parallel': {
+                    'matrix': [
+                        OrderedDict(
+                            [
+                                ('VAR1', ['a', 'b']),
+                                ('VAR2', 'x'),
+                            ]
+                        )
+                    ]
+                },
+            }
+        }
+        expected_yml = {
+            'job: [a, x]': {'script': 'echo hello', 'variables': {'VAR1': 'a', 'VAR2': 'x'}},
+            'job: [b, x]': {'script': 'echo hello', 'variables': {'VAR1': 'b', 'VAR2': 'x'}},
+        }
+
+        res = expand_matrix_jobs(yml)
+
+        self.assertDictEqual(res, expected_yml)
+
+    def test_multiple2(self):
+        yml = {
+            'job': {
+                'script': 'echo hello',
+                'parallel': {
+                    'matrix': [
+                        OrderedDict(
+                            [
+                                ('VAR1', ['a', 'b']),
+                                ('VAR2', ['x', 'y']),
+                            ]
+                        )
+                    ]
+                },
+            }
+        }
+        expected_yml = {
+            'job: [a, x]': {'script': 'echo hello', 'variables': {'VAR1': 'a', 'VAR2': 'x'}},
+            'job: [b, x]': {'script': 'echo hello', 'variables': {'VAR1': 'b', 'VAR2': 'x'}},
+            'job: [a, y]': {'script': 'echo hello', 'variables': {'VAR1': 'a', 'VAR2': 'y'}},
+            'job: [b, y]': {'script': 'echo hello', 'variables': {'VAR1': 'b', 'VAR2': 'y'}},
+        }
+
+        res = expand_matrix_jobs(yml)
+
+        self.assertDictEqual(res, expected_yml)
+
+    def test_many(self):
+        yml = {
+            'job': {
+                'script': 'echo hello',
+                'parallel': {
+                    'matrix': [
+                        OrderedDict(
+                            [
+                                ('VAR1', ['a', 'b']),
+                                ('VAR2', ['x', 'y']),
+                            ]
+                        ),
+                        OrderedDict(
+                            [
+                                ('VAR1', ['alpha', 'beta']),
+                                ('VAR2', ['x', 'y']),
+                            ]
+                        ),
+                    ]
+                },
+            }
+        }
+        expected_yml = {
+            'job: [a, x]': {'script': 'echo hello', 'variables': {'VAR1': 'a', 'VAR2': 'x'}},
+            'job: [b, x]': {'script': 'echo hello', 'variables': {'VAR1': 'b', 'VAR2': 'x'}},
+            'job: [a, y]': {'script': 'echo hello', 'variables': {'VAR1': 'a', 'VAR2': 'y'}},
+            'job: [b, y]': {'script': 'echo hello', 'variables': {'VAR1': 'b', 'VAR2': 'y'}},
+            'job: [alpha, x]': {'script': 'echo hello', 'variables': {'VAR1': 'alpha', 'VAR2': 'x'}},
+            'job: [beta, x]': {'script': 'echo hello', 'variables': {'VAR1': 'beta', 'VAR2': 'x'}},
+            'job: [alpha, y]': {'script': 'echo hello', 'variables': {'VAR1': 'alpha', 'VAR2': 'y'}},
+            'job: [beta, y]': {'script': 'echo hello', 'variables': {'VAR1': 'beta', 'VAR2': 'y'}},
+        }
+
+        res = expand_matrix_jobs(yml)
+
+        self.assertDictEqual(res, expected_yml)
 
 
 class TestGitlabConfigurationIsModified(unittest.TestCase):
@@ -284,3 +483,183 @@ class TestGitlabConfigurationIsModified(unittest.TestCase):
         diff = f'diff --git a/{file} b/{file}\nindex 561eb1a201..5e43218090 100644\n--- a/{file}\n+++ b/{file}\n@@ -1,4 +1,11 @@\n ---\n+rtloader_tests:\n+  stage: source_test\n+  needs: ["go_deps"]\n+  before_script:\n+    - source /root/.bashrc && conda activate $CONDA_ENV\n+  script: ["# Skipping go tests"]\n+\n nerd_tests\n   stage: source_test\n   needs: ["go_deps"]\ndiff --git a/{yaml} b/{yaml}\nindex 561eb1a201..5e43218090 100644\n--- a/{yaml}\n+++ b/{yaml}\n@@ -1,4 +1,11 @@\n ---\n+rtloader_tests:\n+  stage: source_test\n+  noods: ["go_deps"]\n+  before_script:\n+    - source /root/.bashrc && conda activate $CONDA_ENV\n+  script: ["# Skipping go tests"]\n+\n nerd_tests\n   stage: source_test\n   needs: ["go_deps"]'
         c = MockContext(run={"git diff HEAD^1..HEAD": Result(diff)})
         self.assertTrue(gitlab_configuration_is_modified(c))
+
+
+class TestFilterVariables(unittest.TestCase):
+    def test_no_images(self):
+        variables = {
+            'DATADOG_AGENT_BUILDIMAGES_SUFFIX': '',
+            'DATADOG_AGENT_BUILDIMAGES': 'haddock',
+            'DATADOG_AGENT_SYSPROBE_BUILDIMAGES_SUFFIX': '',
+            'DATADOG_AGENT_SYSPROBE_BUILDIMAGES': 'v46542806-c7a4a6be',
+            'CI_IMAGE_AGENT': 'tintin',
+            'CI_IMAGE_AGENT_SUFFIX': '',
+            'OTHER_VARIABLE_SUFFIX': '',
+            'OTHER_VARIABLE': 'lampion',
+        }
+        self.assertEqual(
+            list(find_buildimages(variables)), ['DATADOG_AGENT_BUILDIMAGES', 'DATADOG_AGENT_SYSPROBE_BUILDIMAGES']
+        )
+
+    def test_one_image(self):
+        variables = {
+            'DATADOG_AGENT_BUILDIMAGES_SUFFIX': '',
+            'DATADOG_AGENT_BUILDIMAGES': 'haddock',
+            'CI_IMAGE_AGENT': 'tintin',
+            'CI_IMAGE_AGENT_SUFFIX': '',
+            'CI_IMAGE_OWNER': 'tournesol',
+            'CI_IMAGE_OWNER_SUFFIX': '',
+            'OTHER_VARIABLE_SUFFIX': '',
+            'OTHER_VARIABLE': 'lampion',
+        }
+        self.assertEqual(list(find_buildimages(variables, "agent", "CI_IMAGE")), ['CI_IMAGE_AGENT'])
+        self.assertEqual(list(find_buildimages(variables, "AGENT", "CI_IMAGE")), ['CI_IMAGE_AGENT'])
+
+    def test_multi_match(self):
+        variables = {
+            'DATADOG_AGENT_BUILDIMAGES_SUFFIX': '',
+            'DATADOG_AGENT_BUILDIMAGES': 'haddock',
+            'CI_IMAGE_AGENT': 'tintin',
+            'CI_IMAGE_AGENT_SUFFIX': '',
+            'CI_IMAGE_AGENT_42': 'tournesol',
+            'CI_IMAGE_AGENT_42_SUFFIX': '',
+        }
+        self.assertEqual(
+            list(find_buildimages(variables, "agent", "CI_IMAGE")), ['CI_IMAGE_AGENT', 'CI_IMAGE_AGENT_42']
+        )
+        self.assertEqual(
+            list(find_buildimages(variables, "AGENT", "CI_IMAGE")), ['CI_IMAGE_AGENT', 'CI_IMAGE_AGENT_42']
+        )
+
+    def test_all_images(self):
+        variables = {
+            'DATADOG_AGENT_BUILDIMAGES_SUFFIX': '',
+            'DATADOG_AGENT_BUILDIMAGES': 'haddock',
+            'CI_IMAGE_AGENT': 'tintin',
+            'CI_IMAGE_AGENT_SUFFIX': '',
+            'CI_IMAGE_AGENT_42': 'tournesol',
+            'CI_IMAGE_AGENT_42_SUFFIX': '',
+            'CI_IMAGE_OWNER': 'tapioca',
+            'CI_IMAGE_OWNER_SUFFIX': '',
+        }
+        self.assertEqual(
+            list(find_buildimages(variables, "", "CI_IMAGE")), ['CI_IMAGE_AGENT', 'CI_IMAGE_AGENT_42', 'CI_IMAGE_OWNER']
+        )
+        self.assertEqual(
+            list(find_buildimages(variables, "", "CI_IMAGE")), ['CI_IMAGE_AGENT', 'CI_IMAGE_AGENT_42', 'CI_IMAGE_OWNER']
+        )
+
+
+class TestModifyContent(unittest.TestCase):
+    gitlab_ci = None
+
+    def setUp(self) -> None:
+        with open("tasks/unit_tests/testdata/variables.yml") as gl:
+            self.gitlab_ci = gl.readlines()
+        return super().setUp()
+
+    def test_all_buildimages(self):
+        prefix = 'DATADOG_AGENT_'
+        images = [
+            'DATADOG_AGENT_BUILDIMAGES',
+            'DATADOG_AGENT_WINBUILDIMAGES',
+            'DATADOG_AGENT_ARMBUILDIMAGES',
+            'DATADOG_AGENT_SYSPROBE_BUILDIMAGES',
+            'DATADOG_AGENT_BTF_GEN_BUILDIMAGES',
+        ]
+        modified = update_image_tag(self.gitlab_ci, "1mageV3rsi0n", images)
+        yaml.SafeLoader.add_constructor(ReferenceTag.yaml_tag, ReferenceTag.from_yaml)
+        config = yaml.safe_load("".join(modified))
+        self.assertEqual(
+            5, sum(1 for k, v in config["variables"].items() if k.startswith(prefix) and v == "_test_only")
+        )
+        self.assertEqual(
+            5, sum(1 for k, v in config["variables"].items() if k.startswith(prefix) and v == "1mageV3rsi0n")
+        )
+
+    def test_one_buildimage(self):
+        prefix = 'DATADOG_AGENT_'
+        images = ['DATADOG_AGENT_BTF_GEN_BUILDIMAGES']
+        modified = update_image_tag(self.gitlab_ci, "1mageV3rsi0n", images)
+        yaml.SafeLoader.add_constructor(ReferenceTag.yaml_tag, ReferenceTag.from_yaml)
+        config = yaml.safe_load("".join(modified))
+        self.assertEqual(
+            1, sum(1 for k, v in config["variables"].items() if k.startswith(prefix) and v == "_test_only")
+        )
+        self.assertEqual(
+            1, sum(1 for k, v in config["variables"].items() if k.startswith(prefix) and v == "1mageV3rsi0n")
+        )
+
+    def test_one_image(self):
+        prefix = "CI_IMAGE_"
+        images = ['CI_IMAGE_DEB_X64']
+        modified = update_image_tag(self.gitlab_ci, "1mageV3rsi0n", images)
+        yaml.SafeLoader.add_constructor(ReferenceTag.yaml_tag, ReferenceTag.from_yaml)
+        config = yaml.safe_load("".join(modified))
+        self.assertEqual(
+            1, sum(1 for k, v in config["variables"].items() if k.startswith(prefix) and v == "_test_only")
+        )
+        self.assertEqual(
+            1, sum(1 for k, v in config["variables"].items() if k.startswith(prefix) and v == "1mageV3rsi0n")
+        )
+
+    def test_several_images(self):
+        prefix = "CI_IMAGE_"
+        images = ['CI_IMAGE_DEB_X64', 'CI_IMAGE_RPM_ARMHF']
+        modified = update_image_tag(self.gitlab_ci, "1mageV3rsi0n", images)
+        yaml.SafeLoader.add_constructor(ReferenceTag.yaml_tag, ReferenceTag.from_yaml)
+        config = yaml.safe_load("".join(modified))
+        self.assertEqual(
+            2, sum(1 for k, v in config["variables"].items() if k.startswith(prefix) and v == "_test_only")
+        )
+        self.assertEqual(
+            2, sum(1 for k, v in config["variables"].items() if k.startswith(prefix) and v == "1mageV3rsi0n")
+        )
+
+    def test_multimatch(self):
+        prefix = "CI_IMAGE_"
+        images = ['X64']
+        modified = update_image_tag(self.gitlab_ci, "1mageV3rsi0n", images)
+        yaml.SafeLoader.add_constructor(ReferenceTag.yaml_tag, ReferenceTag.from_yaml)
+        config = yaml.safe_load("".join(modified))
+        self.assertEqual(
+            7, sum(1 for k, v in config["variables"].items() if k.startswith(prefix) and v == "_test_only")
+        )
+        self.assertEqual(
+            7, sum(1 for k, v in config["variables"].items() if k.startswith(prefix) and v == "1mageV3rsi0n")
+        )
+
+    def test_update_no_test(self):
+        prefix = "CI_IMAGE_"
+        images = [
+            'GITLAB_AGENT_DEPLOY',
+            'CI_IMAGE_BTF_GEN',
+            'DEB',
+            'DD_AGENT_TESTING',
+            'DOCKER',
+            'GLIBC',
+            'SYSTEM_PROBE',
+            'RPM',
+            'WIN',
+        ]
+        modified = update_image_tag(self.gitlab_ci, "1mageV3rsi0n", images, test=False)
+        yaml.SafeLoader.add_constructor(ReferenceTag.yaml_tag, ReferenceTag.from_yaml)
+        config = yaml.safe_load("".join(modified))
+        self.assertEqual(
+            0, sum(1 for k, v in config["variables"].items() if k.startswith(prefix) and v == "_test_only")
+        )
+        self.assertEqual(
+            17, sum(1 for k, v in config["variables"].items() if k.startswith(prefix) and v == "1mageV3rsi0n")
+        )
+
+
+class TestUpdateGitlabConfig(unittest.TestCase):
+    def test_old_images(self):
+        self.assertEqual(
+            len(update_gitlab_config(".gitlab-ci.yml", tag="gru", images="", test=False, update=False)), 22
+        )
+
+    def test_multi_update(self):
+        self.assertEqual(
+            len(update_gitlab_config(".gitlab-ci.yml", tag="gru", images="deb,rpm", test=False, update=False)), 11
+        )

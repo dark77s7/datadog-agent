@@ -22,7 +22,7 @@ import (
 	"github.com/DataDog/datadog-agent/pkg/util/log"
 	"github.com/DataDog/datadog-agent/pkg/util/optional"
 
-	"github.com/aquasecurity/trivy/pkg/fanal/cache"
+	"github.com/aquasecurity/trivy/pkg/cache"
 	"github.com/aquasecurity/trivy/pkg/fanal/types"
 	"github.com/hashicorp/golang-lru/v2/simplelru"
 )
@@ -301,7 +301,7 @@ func (c *persistentCache) removeOldest() error {
 	}
 
 	evicted := 0
-	if err := c.db.Delete([]string{key}, func(key string, value []byte) error {
+	if err := c.db.Delete([]string{key}, func(_ string, value []byte) error {
 		evicted += len(value)
 		return nil
 	}); err != nil {

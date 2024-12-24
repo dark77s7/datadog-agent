@@ -54,7 +54,7 @@ func (r *HTTPReceiver) symDBProxyHandler() http.Handler {
 
 // symDBErrorHandler always returns http.StatusInternalServerError with a clarifying message.
 func symDBErrorHandler(err error) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		msg := fmt.Sprintf("SymDB Proxy is OFF: %v", err)
 		http.Error(w, msg, http.StatusInternalServerError)
 	})
@@ -62,7 +62,7 @@ func symDBErrorHandler(err error) http.Handler {
 
 // newSymDBProxy returns a new httputil.ReverseProxy proxying and augmenting requests with headers containing the tags.
 func newSymDBProxy(conf *config.AgentConfig, transport http.RoundTripper, hostTags string) *httputil.ReverseProxy {
-	cidProvider := NewIDProvider(conf.ContainerProcRoot)
+	cidProvider := NewIDProvider(conf.ContainerProcRoot, conf.ContainerIDFromOriginInfo)
 	logger := log.NewThrottled(5, 10*time.Second) // limit to 5 messages every 10 seconds
 	return &httputil.ReverseProxy{
 		Director:  getSymDBDirector(hostTags, cidProvider, conf.ContainerTags),

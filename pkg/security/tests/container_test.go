@@ -9,11 +9,7 @@
 package tests
 
 import (
-	"fmt"
-	"os"
 	"os/exec"
-	"strconv"
-	"syscall"
 	"testing"
 	"time"
 
@@ -58,18 +54,14 @@ func TestContainerCreatedAt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dockerWrapper, err := newDockerCmdWrapper(test.Root(), test.Root(), "ubuntu")
+	dockerWrapper, err := newDockerCmdWrapper(test.Root(), test.Root(), "ubuntu", "")
 	if err != nil {
 		t.Skip("Skipping created time in containers tests: Docker not available")
 		return
 	}
-
-	if _, err := dockerWrapper.start(); err != nil {
-		t.Fatal(err)
-	}
 	defer dockerWrapper.stop()
 
-	dockerWrapper.Run(t, "container-created-at", func(t *testing.T, kind wrapperType, cmdFunc func(cmd string, args []string, envs []string) *exec.Cmd) {
+	dockerWrapper.Run(t, "container-created-at", func(t *testing.T, _ wrapperType, cmdFunc func(cmd string, args []string, envs []string) *exec.Cmd) {
 		test.WaitSignal(t, func() error {
 			cmd := cmdFunc("touch", []string{testFile}, nil)
 			return cmd.Run()
@@ -82,7 +74,7 @@ func TestContainerCreatedAt(t *testing.T) {
 		})
 	})
 
-	dockerWrapper.Run(t, "container-created-at-delay", func(t *testing.T, kind wrapperType, cmdFunc func(cmd string, args []string, envs []string) *exec.Cmd) {
+	dockerWrapper.Run(t, "container-created-at-delay", func(t *testing.T, _ wrapperType, cmdFunc func(cmd string, args []string, envs []string) *exec.Cmd) {
 		test.WaitSignal(t, func() error {
 			cmd := cmdFunc("touch", []string{testFileDelay}, nil) // shouldn't trigger an event
 			if err := cmd.Run(); err != nil {
@@ -105,13 +97,13 @@ func TestContainerCreatedAt(t *testing.T) {
 	})
 }
 
-func TestContainerFlags(t *testing.T) {
+func TestContainerFlagsDocker(t *testing.T) {
 	SkipIfNotAvailable(t)
 
 	ruleDefs := []*rules.RuleDefinition{
 		{
 			ID:         "test_container_flags",
-			Expression: `container.runtime == "docker" && container.id != "" && open.file.path == "{{.Root}}/test-open" && cgroup.id =~ "docker*"`,
+			Expression: `container.runtime == "docker" && container.id != "" && open.file.path == "{{.Root}}/test-open" && cgroup.id =~ "*docker*"`,
 		},
 	}
 	test, err := newTestModule(t, nil, ruleDefs)
@@ -125,18 +117,14 @@ func TestContainerFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dockerWrapper, err := newDockerCmdWrapper(test.Root(), test.Root(), "ubuntu")
+	dockerWrapper, err := newDockerCmdWrapper(test.Root(), test.Root(), "ubuntu", "")
 	if err != nil {
-		t.Skip("Skipping created time in containers tests: Docker not available")
+		t.Skipf("Skipping container test: Docker not available (%s)", err.Error())
 		return
-	}
-
-	if _, err := dockerWrapper.start(); err != nil {
-		t.Fatal(err)
 	}
 	defer dockerWrapper.stop()
 
-	dockerWrapper.Run(t, "container-runtime", func(t *testing.T, kind wrapperType, cmdFunc func(cmd string, args []string, envs []string) *exec.Cmd) {
+	dockerWrapper.Run(t, "container-runtime", func(t *testing.T, _ wrapperType, cmdFunc func(cmd string, args []string, envs []string) *exec.Cmd) {
 		test.WaitSignal(t, func() error {
 			cmd := cmdFunc("touch", []string{testFile}, nil)
 			return cmd.Run()
@@ -152,91 +140,13 @@ func TestContainerFlags(t *testing.T) {
 	})
 }
 
-func TestContainerScopedVariable(t *testing.T) {
-	SkipIfNotAvailable(t)
-
-	ruleDefs := []*rules.RuleDefinition{
-		{
-			ID:         "test_container_set_scoped_variable",
-			Expression: `open.file.path == "/tmp/test-open"`,
-			Actions: []*rules.ActionDefinition{{
-				Set: &rules.SetDefinition{
-					Name:  "var1",
-					Value: true,
-					Scope: "container",
-				},
-			}},
-		}, {
-			ID:         "test_container_check_scoped_variable",
-			Expression: `open.file.path == "/tmp/test-open-2" && ${container.var1} == true`,
-		},
-	}
-
-	test, err := newTestModule(t, nil, ruleDefs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer test.Close()
-
-	wrapper, err := newDockerCmdWrapper(test.Root(), test.Root(), "alpine")
-	if err != nil {
-		t.Skip("docker no available")
-		return
-	}
-
-	if _, err := wrapper.start(); err != nil {
-		t.Fatal(err)
-	}
-	defer wrapper.stop()
-
-	wrapper.RunTest(t, "set-var", func(t *testing.T, kind wrapperType, cmdFunc func(cmd string, args []string, envs []string) *exec.Cmd) {
-		test.WaitSignal(t, func() error {
-			cmd := cmdFunc("/bin/touch", []string{"/tmp/test-open"}, nil)
-			if out, err := cmd.CombinedOutput(); err != nil {
-				return fmt.Errorf("%s: %w", out, err)
-			}
-			return nil
-		}, func(event *model.Event, rule *rules.Rule) {
-			assert.Equal(t, "test_container_set_scoped_variable", rule.ID, "wrong rule triggered")
-		})
-	})
-
-	wrapper.RunTest(t, "check-var", func(t *testing.T, kind wrapperType, cmdFunc func(cmd string, args []string, envs []string) *exec.Cmd) {
-		test.WaitSignal(t, func() error {
-			cmd := cmdFunc("/bin/touch", []string{"/tmp/test-open-2"}, nil)
-			if out, err := cmd.CombinedOutput(); err != nil {
-				return fmt.Errorf("%s: %w", out, err)
-			}
-			return nil
-		}, func(event *model.Event, rule *rules.Rule) {
-			assert.Equal(t, "test_container_check_scoped_variable", rule.ID, "wrong rule triggered")
-		})
-	})
-}
-
-func createCGroup(name string) (string, error) {
-	cgroupPath := "/sys/fs/cgroup/memory/" + name
-	if err := os.MkdirAll(cgroupPath, 0700); err != nil {
-		return "", err
-	}
-
-	if err := os.WriteFile(cgroupPath+"/cgroup.procs", []byte(strconv.Itoa(os.Getpid())), 0700); err != nil {
-		return "", err
-	}
-
-	return cgroupPath, nil
-}
-func TestCGroupID(t *testing.T) {
-	if testEnvironment == DockerEnvironment {
-		t.Skip("skipping cgroup ID test in docker")
-	}
-
+func TestContainerFlagsPodman(t *testing.T) {
 	SkipIfNotAvailable(t)
 
 	ruleDefs := []*rules.RuleDefinition{
 		{
 			ID:         "test_container_flags",
-			Expression: `open.file.path == "{{.Root}}/test-open" && cgroup.id == "cg1"`,
+			Expression: `container.runtime == "podman" && container.id != "" && open.file.path == "{{.Root}}/test-open" && cgroup.id =~ "*libpod*"`,
 		},
 	}
 	test, err := newTestModule(t, nil, ruleDefs)
@@ -245,32 +155,98 @@ func TestCGroupID(t *testing.T) {
 	}
 	defer test.Close()
 
-	cgroupPath, err := createCGroup("cg1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(cgroupPath)
-
-	testFile, testFilePtr, err := test.Path("test-open")
+	testFile, _, err := test.Path("test-open")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	test.Run(t, "cgroup-id", func(t *testing.T, kind wrapperType, cmdFunc func(cmd string, args []string, envs []string) *exec.Cmd) {
+	podmanWrapper, err := newDockerCmdWrapper(test.Root(), test.Root(), "ubuntu", string(podmanWrapperType))
+	if err != nil {
+		t.Skip("Skipping created time in containers tests: podman not available")
+		return
+	}
+	defer podmanWrapper.stop()
+
+	podmanWrapper.Run(t, "container-runtime", func(t *testing.T, _ wrapperType, cmdFunc func(cmd string, args []string, envs []string) *exec.Cmd) {
 		test.WaitSignal(t, func() error {
-			fd, _, errno := syscall.Syscall6(syscall.SYS_OPENAT, 0, uintptr(testFilePtr), syscall.O_CREAT, 0711, 0, 0)
-			if errno != 0 {
-				return error(errno)
-			}
-			return syscall.Close(int(fd))
-
+			cmd := cmdFunc("touch", []string{testFile}, nil)
+			return cmd.Run()
 		}, func(event *model.Event, rule *rules.Rule) {
 			assertTriggeredRule(t, rule, "test_container_flags")
 			assertFieldEqual(t, event, "open.file.path", testFile)
-			assertFieldEqual(t, event, "container.id", "")
-			assertFieldEqual(t, event, "container.runtime", "")
-			assert.Equal(t, containerutils.CGroupFlags(0), event.CGroupContext.CGroupFlags)
-			assertFieldEqual(t, event, "cgroup.id", "cg1")
+			assertFieldNotEmpty(t, event, "container.id", "container id shouldn't be empty")
+			assertFieldEqual(t, event, "container.runtime", "podman")
+			assert.Equal(t, containerutils.CGroupFlags(containerutils.CGroupManagerPodman), event.CGroupContext.CGroupFlags)
+
+			test.validateOpenSchema(t, event)
+		})
+	})
+}
+
+func TestContainerVariables(t *testing.T) {
+	SkipIfNotAvailable(t)
+
+	ruleDefs := []*rules.RuleDefinition{
+		{
+			ID:         "test_container_set_variable",
+			Expression: `container.id != "" && open.file.path == "{{.Root}}/test-open"`,
+			Actions: []*rules.ActionDefinition{
+				{
+					Set: &rules.SetDefinition{
+						Scope: "container",
+						Value: 1,
+						Name:  "foo",
+					},
+				},
+			},
+		},
+		{
+			ID:         "test_container_check_variable",
+			Expression: `container.id != "" && open.file.path == "{{.Root}}/test-open2" && ${container.foo} == 1`,
+		},
+	}
+	test, err := newTestModule(t, nil, ruleDefs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer test.Close()
+
+	testFile, _, err := test.Path("test-open")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	testFile2, _, err := test.Path("test-open2")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dockerWrapper, err := newDockerCmdWrapper(test.Root(), test.Root(), "ubuntu", "")
+	if err != nil {
+		t.Skip("Skipping created time in containers tests: Docker not available")
+		return
+	}
+	defer dockerWrapper.stop()
+
+	dockerWrapper.Run(t, "container-variables", func(t *testing.T, _ wrapperType, cmdFunc func(cmd string, args []string, envs []string) *exec.Cmd) {
+		test.WaitSignal(t, func() error {
+			cmd := cmdFunc("touch", []string{testFile}, nil)
+			return cmd.Run()
+		}, func(event *model.Event, rule *rules.Rule) {
+			assertTriggeredRule(t, rule, "test_container_set_variable")
+			assertFieldEqual(t, event, "open.file.path", testFile)
+			assertFieldNotEmpty(t, event, "container.id", "container id shouldn't be empty")
+
+			test.validateOpenSchema(t, event)
+		})
+
+		test.WaitSignal(t, func() error {
+			cmd := cmdFunc("touch", []string{testFile2}, nil)
+			return cmd.Run()
+		}, func(event *model.Event, rule *rules.Rule) {
+			assertTriggeredRule(t, rule, "test_container_check_variable")
+			assertFieldEqual(t, event, "open.file.path", testFile2)
+			assertFieldNotEmpty(t, event, "container.id", "container id shouldn't be empty")
 
 			test.validateOpenSchema(t, event)
 		})

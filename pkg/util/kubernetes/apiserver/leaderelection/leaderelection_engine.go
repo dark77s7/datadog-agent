@@ -24,7 +24,7 @@ import (
 	"k8s.io/client-go/tools/record"
 
 	configmaplock "github.com/DataDog/datadog-agent/internal/third_party/client-go/tools/leaderelection/resourcelock"
-	"github.com/DataDog/datadog-agent/pkg/config"
+	pkgconfigsetup "github.com/DataDog/datadog-agent/pkg/config/setup"
 	"github.com/DataDog/datadog-agent/pkg/util/kubernetes/apiserver/leaderelection/metrics"
 	"github.com/DataDog/datadog-agent/pkg/util/log"
 )
@@ -151,10 +151,10 @@ func (le *LeaderEngine) newElection() (*ld.LeaderElector, error) {
 			le.reportLeaderMetric(identity == le.HolderIdentity)
 			log.Infof("New leader %q", identity)
 		},
-		OnStartedLeading: func(ctx context.Context) {
+		OnStartedLeading: func(context.Context) {
 			le.updateLeaderIdentity(le.HolderIdentity)
 			le.reportLeaderMetric(true)
-			le.notify()
+			le.notify() // current process gained leadership
 			log.Infof("Started leading as %q...", le.HolderIdentity)
 		},
 		// OnStoppedLeading shouldn't be called unless the election is lost. This could happen if
@@ -162,6 +162,7 @@ func (le *LeaderEngine) newElection() (*ld.LeaderElector, error) {
 		OnStoppedLeading: func() {
 			le.updateLeaderIdentity("")
 			le.reportLeaderMetric(false)
+			le.notify() // current process lost leadership
 			log.Infof("Stopped leading %q", le.HolderIdentity)
 		},
 	}
@@ -192,7 +193,7 @@ func (le *LeaderEngine) newElection() (*ld.LeaderElector, error) {
 	electionConfig := ld.LeaderElectionConfig{
 		// ReleaseOnCancel updates the leader election lock when the main context is canceled by setting the Lease Duration to 1s.
 		// It allows the next DCA to initialize faster. However, it performs a network call on shutdown.
-		ReleaseOnCancel: config.Datadog().GetBool("leader_election_release_on_shutdown"),
+		ReleaseOnCancel: pkgconfigsetup.Datadog().GetBool("leader_election_release_on_shutdown"),
 		Lock:            leaderElectorInterface,
 		LeaseDuration:   le.LeaseDuration,
 		RenewDeadline:   le.LeaseDuration / 2,
@@ -219,14 +220,18 @@ func (le *LeaderEngine) reportLeaderMetric(isLeader bool) {
 	le.leaderMetric.Set(1.0, metrics.JoinLeaderValue, strconv.FormatBool(isLeader))
 }
 
-// notify sends a notification to subscribers when the current process becomes leader.
-// notify is a simplistic notifier but can be extended to send different notification
-// kinds (leadership acquisition / loss) in the future if needed.
+// notify sends a notification to subscribers when the leadership state of the current
+// process changes
 func (le *LeaderEngine) notify() {
 	le.m.Lock()
 	defer le.m.Unlock()
 
 	for _, s := range le.subscribers {
+		if len(s) > 0 {
+			// subscriber already notified about the change in leadership state
+			continue
+		}
+
 		s <- struct{}{}
 	}
 }

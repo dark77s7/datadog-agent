@@ -12,8 +12,13 @@ import (
 	"strings"
 	"time"
 
+	componentos "github.com/DataDog/test-infra-definitions/components/os"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v2"
+
 	"github.com/DataDog/datadog-agent/test/new-e2e/pkg/components"
-	"github.com/DataDog/datadog-agent/test/new-e2e/pkg/e2e"
+	"github.com/DataDog/datadog-agent/test/new-e2e/pkg/utils/common"
 	"github.com/DataDog/datadog-agent/test/new-e2e/pkg/utils/e2e/client"
 	"github.com/DataDog/datadog-agent/test/new-e2e/pkg/utils/e2e/client/agentclient"
 	boundport "github.com/DataDog/datadog-agent/test/new-e2e/tests/agent-platform/common/bound-port"
@@ -22,10 +27,6 @@ import (
 	pkgmanager "github.com/DataDog/datadog-agent/test/new-e2e/tests/agent-platform/common/pkg-manager"
 	"github.com/DataDog/datadog-agent/test/new-e2e/tests/agent-platform/common/process"
 	svcmanager "github.com/DataDog/datadog-agent/test/new-e2e/tests/agent-platform/common/svc-manager"
-	componentos "github.com/DataDog/test-infra-definitions/components/os"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v2"
 
 	"testing"
 )
@@ -34,7 +35,8 @@ type tHelper interface {
 	Helper()
 }
 
-func getServiceManager(host *components.RemoteHost) svcmanager.ServiceManager {
+// GetServiceManager returns the service manager for the host
+func GetServiceManager(host *components.RemoteHost) svcmanager.ServiceManager {
 	if _, err := host.Execute("command -v systemctl"); err == nil {
 		return svcmanager.NewSystemctl(host)
 	}
@@ -77,7 +79,7 @@ type TestClient struct {
 
 // NewTestClient create a an ExtendedClient from VMClient and AgentCommandRunner, includes svcManager and pkgManager to write agent-platform tests
 func NewTestClient(host *components.RemoteHost, agentClient agentclient.Agent, fileManager filemanager.FileManager, helper helpers.Helper) *TestClient {
-	svcManager := getServiceManager(host)
+	svcManager := GetServiceManager(host)
 	pkgManager := getPackageManager(host)
 	return &TestClient{
 		Host:        host,
@@ -177,22 +179,11 @@ func (c *TestClient) GetAgentVersion() (string, error) {
 
 // ExecuteWithRetry execute the command with retry
 func (c *TestClient) ExecuteWithRetry(cmd string) (string, error) {
-	var err error
-	var output string
-
-	for try := 0; try < 5; try++ {
-		output, err = c.Host.Execute(cmd)
-		if err == nil {
-			break
-		}
-		time.Sleep(time.Duration(math.Pow(2, float64(try))) * time.Second)
-	}
-
-	return output, err
+	return execWithRetry(func(cmd string) (string, error) { return c.Host.Execute(cmd) }, cmd)
 }
 
 // NewWindowsTestClient create a TestClient for Windows VM
-func NewWindowsTestClient(context e2e.Context, host *components.RemoteHost) *TestClient {
+func NewWindowsTestClient(context common.Context, host *components.RemoteHost) *TestClient {
 	fileManager := filemanager.NewRemoteHost(host)
 	t := context.T()
 
@@ -280,4 +271,64 @@ func ReadJournalCtl(t *testing.T, client *TestClient, grepPattern string) string
 		t.Log("Skipping, journalctl failed to run")
 	}
 	return journalCtlOutput
+}
+
+// DockerTestClient is a helper to run commands on a docker container for tests
+type DockerTestClient struct {
+	host          *components.RemoteHost
+	containerName string
+}
+
+// NewDockerTestClient creates a client to help write tests that run on a docker container
+func NewDockerTestClient(host *components.RemoteHost, containerName string) *DockerTestClient {
+	return &DockerTestClient{
+		host:          host,
+		containerName: containerName,
+	}
+}
+
+// RunContainer starts the docker container in the background based on the given image reference
+func (c *DockerTestClient) RunContainer(image string) error {
+	// We run an infinite no-op to keep it alive
+	_, err := c.host.Execute(
+		fmt.Sprintf("docker run -d -e DD_HOSTNAME=docker-test --name '%s' '%s' tail -f /dev/null", c.containerName, image),
+	)
+	return err
+}
+
+// Cleanup force-removes the docker container associated to the client
+func (c *DockerTestClient) Cleanup() error {
+	_, err := c.host.Execute(fmt.Sprintf("docker rm -f '%s'", c.containerName))
+	return err
+}
+
+// Execute runs commands on a Docker remote host
+func (c *DockerTestClient) Execute(command string) (output string, err error) {
+	return c.host.Execute(
+		// Run command on container via docker exec and wrap with sh -c
+		// to provide a similar interface to remote host's execute
+		fmt.Sprintf("docker exec %s sh -c '%s'", c.containerName, command),
+	)
+}
+
+// ExecuteWithRetry execute the command with retry
+func (c *DockerTestClient) ExecuteWithRetry(cmd string) (output string, err error) {
+	return execWithRetry(c.Execute, cmd)
+}
+
+func execWithRetry(exec func(string) (string, error), cmd string) (string, error) {
+	var err error
+	var output string
+	maxTries := 5
+
+	for try := 0; try < maxTries; try++ {
+		output, err = exec(cmd)
+		if err == nil {
+			break
+		}
+		fmt.Printf("(attempt %d of %d) error while executing command in host: %v\n", try+1, maxTries, err)
+		time.Sleep(time.Duration(math.Pow(2, float64(try))) * time.Second)
+	}
+
+	return output, err
 }

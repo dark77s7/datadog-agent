@@ -14,7 +14,7 @@ import (
 	"github.com/DataDog/test-infra-definitions/components/datadog/agentparams"
 
 	"github.com/DataDog/datadog-agent/test/new-e2e/pkg/e2e"
-	awshost "github.com/DataDog/datadog-agent/test/new-e2e/pkg/environments/aws/host"
+	awshost "github.com/DataDog/datadog-agent/test/new-e2e/pkg/provisioners/aws/host"
 	"github.com/DataDog/datadog-agent/test/new-e2e/pkg/utils/e2e/client/agentclient"
 )
 
@@ -67,6 +67,7 @@ func (v *linuxFlareSuite) TestzzzFlareWithAllConfiguration() {
 
 	flare, _ := requestAgentFlareAndFetchFromFakeIntake(&v.baseFlareSuite, agentclient.WithArgs([]string{"--email", "e2e@test.com", "--send"}))
 
+	assertFilesExist(v.T(), flare, linuxFiles)
 	assertFilesExist(v.T(), flare, scenarioExpectedFiles)
 	assertFilesExist(v.T(), flare, allLogFiles)
 	assertFilesExist(v.T(), flare, allConfigFiles)

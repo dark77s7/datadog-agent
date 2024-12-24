@@ -12,194 +12,116 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+
+	"github.com/DataDog/datadog-agent/pkg/ebpf/uprobes"
 	"github.com/DataDog/datadog-agent/pkg/network/config"
 	"github.com/DataDog/datadog-agent/pkg/network/usm/utils"
-	"github.com/DataDog/datadog-agent/pkg/util/kernel"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
-func TestGetEnvoyPath(t *testing.T) {
-	_ = createFakeProcFS(t)
-	monitor := newIstioTestMonitor(t)
+const (
+	defaultEnvoyName = "/bin/envoy"
+)
+
+func TestIsIstioBinary(t *testing.T) {
+	procRoot := uprobes.CreateFakeProcFS(t, []uprobes.FakeProcFSEntry{})
+	m := newIstioTestMonitor(t, procRoot)
 
 	t.Run("an actual envoy process", func(t *testing.T) {
-		path := monitor.getEnvoyPath(uint32(1))
-		assert.Equal(t, "/usr/local/bin/envoy", path)
+		assert.True(t, m.isIstioBinary(defaultEnvoyName, uprobes.NewProcInfo(procRoot, 1)))
 	})
 	t.Run("something else", func(t *testing.T) {
-		path := monitor.getEnvoyPath(uint32(2))
-		assert.Empty(t, "", path)
+		assert.False(t, m.isIstioBinary("", uprobes.NewProcInfo(procRoot, 2)))
 	})
+}
+
+func TestGetEnvoyPathWithConfig(t *testing.T) {
+	cfg := utils.NewUSMEmptyConfig()
+	cfg.EnableIstioMonitoring = true
+	cfg.EnvoyPath = "/test/envoy"
+	monitor := newIstioTestMonitorWithCFG(t, cfg)
+
+	assert.True(t, monitor.isIstioBinary(cfg.EnvoyPath, uprobes.NewProcInfo("", 0)))
+	assert.False(t, monitor.isIstioBinary("something/else/", uprobes.NewProcInfo("", 0)))
 }
 
 func TestIstioSync(t *testing.T) {
-	t.Run("calling sync for the first time", func(t *testing.T) {
-		procRoot := createFakeProcFS(t)
-		monitor := newIstioTestMonitor(t)
-		registerRecorder := new(utils.CallbackRecorder)
+	t.Run("calling sync for the first time", func(tt *testing.T) {
+		procRoot := uprobes.CreateFakeProcFS(tt, []uprobes.FakeProcFSEntry{
+			{Pid: 1, Exe: defaultEnvoyName},
+			{Pid: 2, Exe: "/bin/bash"},
+			{Pid: 3, Exe: defaultEnvoyName},
+		})
+		monitor := newIstioTestMonitor(tt, procRoot)
 
-		// Setup test callbacks
-		monitor.registerCB = registerRecorder.Callback()
-		monitor.unregisterCB = utils.IgnoreCB
+		mockRegistry := &uprobes.MockFileRegistry{}
+		monitor.attacher.SetRegistry(mockRegistry)
+		mockRegistry.On("GetRegisteredProcesses").Return(map[uint32]struct{}{})
+		mockRegistry.On("Register", defaultEnvoyName, uint32(1), mock.Anything, mock.Anything).Return(nil)
+		mockRegistry.On("Register", defaultEnvoyName, uint32(3), mock.Anything, mock.Anything).Return(nil)
 
 		// Calling sync should detect the two envoy processes
-		monitor.sync()
+		monitor.attacher.Sync(true, true)
 
-		pathID1, err := utils.NewPathIdentifier(filepath.Join(procRoot, "1/root/usr/local/bin/envoy"))
-		require.NoError(t, err)
-
-		pathID2, err := utils.NewPathIdentifier(filepath.Join(procRoot, "3/root/usr/local/bin/envoy"))
-		require.NoError(t, err)
-
-		assert.Equal(t, 2, registerRecorder.TotalCalls())
-		assert.Equal(t, 1, registerRecorder.CallsForPathID(pathID1))
-		assert.Equal(t, 1, registerRecorder.CallsForPathID(pathID2))
+		mockRegistry.AssertExpectations(tt)
 	})
 
-	t.Run("calling sync multiple times", func(t *testing.T) {
-		procRoot := createFakeProcFS(t)
-		monitor := newIstioTestMonitor(t)
-		registerRecorder := new(utils.CallbackRecorder)
+	t.Run("detecting a dangling process", func(tt *testing.T) {
+		procRoot := uprobes.CreateFakeProcFS(tt, []uprobes.FakeProcFSEntry{
+			{Pid: 1, Exe: defaultEnvoyName},
+			{Pid: 2, Exe: "/bin/bash"},
+			{Pid: 3, Exe: defaultEnvoyName},
+		})
+		monitor := newIstioTestMonitor(tt, procRoot)
 
-		// Setup test callbacks
-		monitor.registerCB = registerRecorder.Callback()
-		monitor.unregisterCB = utils.IgnoreCB
+		mockRegistry := &uprobes.MockFileRegistry{}
+		monitor.attacher.SetRegistry(mockRegistry)
+		mockRegistry.On("GetRegisteredProcesses").Return(map[uint32]struct{}{})
+		mockRegistry.On("Register", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil) // Tell the mock to just say ok to everything, we'll validate later
 
-		// Calling sync multiple times shouldn't matter.
-		// Once all envoy process are registered, calling it again shouldn't
-		// trigger additional callback executions
-		monitor.sync()
-		monitor.sync()
-		monitor.sync()
+		monitor.attacher.Sync(true, true)
 
-		pathID1, err := utils.NewPathIdentifier(filepath.Join(procRoot, "1/root/usr/local/bin/envoy"))
-		require.NoError(t, err)
-
-		pathID2, err := utils.NewPathIdentifier(filepath.Join(procRoot, "3/root/usr/local/bin/envoy"))
-		require.NoError(t, err)
-
-		// Each PathID should have triggered a callback exactly once
-		assert.Equal(t, 2, registerRecorder.TotalCalls())
-		assert.Equal(t, 1, registerRecorder.CallsForPathID(pathID1))
-		assert.Equal(t, 1, registerRecorder.CallsForPathID(pathID2))
-	})
-
-	t.Run("detecting a dangling process", func(t *testing.T) {
-		procRoot := createFakeProcFS(t)
-		monitor := newIstioTestMonitor(t)
-		registerRecorder := new(utils.CallbackRecorder)
-		unregisterRecorder := new(utils.CallbackRecorder)
-
-		// Setup test callbacks
-		monitor.registerCB = registerRecorder.Callback()
-		monitor.unregisterCB = unregisterRecorder.Callback()
-
-		monitor.sync()
-
-		// The first call to sync() will start tracing PIDs 1 and 3, but not PID 2
-		assert.Contains(t, monitor.registry.GetRegisteredProcesses(), uint32(1))
-		assert.NotContains(t, monitor.registry.GetRegisteredProcesses(), uint32(2))
-		assert.Contains(t, monitor.registry.GetRegisteredProcesses(), uint32(3))
+		mockRegistry.AssertCalled(tt, "Register", defaultEnvoyName, uint32(1), mock.Anything, mock.Anything)
+		mockRegistry.AssertCalled(tt, "Register", defaultEnvoyName, uint32(3), mock.Anything, mock.Anything)
+		mockRegistry.AssertCalled(tt, "GetRegisteredProcesses")
 
 		// At this point we should have received:
 		// * 2 register calls
+		// * 1 GetRegisteredProcesses call
 		// * 0 unregister calls
-		assert.Equal(t, 2, registerRecorder.TotalCalls())
-		assert.Equal(t, 0, unregisterRecorder.TotalCalls())
+		require.Equal(tt, 3, len(mockRegistry.Calls), "calls made: %v", mockRegistry.Calls)
+		mockRegistry.AssertNotCalled(t, "Unregister", mock.Anything)
 
 		// Now we emulate a process termination for PID 3 by removing it from the fake
 		// procFS tree
-		require.NoError(t, os.RemoveAll(filepath.Join(procRoot, "3")))
+		require.NoError(tt, os.RemoveAll(filepath.Join(procRoot, "3")))
+
+		// Now clear the mock registry expected calls and make it return the state as if the two PIDs were registered
+		mockRegistry.ExpectedCalls = nil
+		mockRegistry.On("Register", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil) // Tell the mock to just say ok to everything, we'll validate later
+		mockRegistry.On("GetRegisteredProcesses").Return(map[uint32]struct{}{1: {}, 3: {}})
+		mockRegistry.On("Unregister", mock.Anything).Return(nil)
 
 		// Once we call sync() again, PID 3 termination should be detected
 		// and the unregister callback should be executed
-		monitor.sync()
-		assert.Equal(t, 1, unregisterRecorder.TotalCalls())
-		assert.NotContains(t, monitor.registry.GetRegisteredProcesses(), uint32(3))
+		monitor.attacher.Sync(true, true)
+		mockRegistry.AssertCalled(tt, "Unregister", uint32(3))
 	})
 }
 
-// This creates a bare-bones procFS with a structure that looks like
-// the following:
-//
-// proc/
-// ├── 1
-// │   ├── cmdline
-// │   └── root
-// │       └── usr
-// │           └── local
-// │               └── bin
-// │                   └── envoy
-// ...
-//
-// This ProcFS contains 3 PIDs:
-//
-// PID 1 -> Envoy process
-// PID 2 -> Bash process
-// PID 3 -> Envoy process
-func createFakeProcFS(t *testing.T) (procRoot string) {
-	procRoot = t.TempDir()
-
-	// Inject fake ProcFS path
-	previousFn := kernel.ProcFSRoot
-	kernel.ProcFSRoot = func() string { return procRoot }
-	t.Cleanup(func() {
-		kernel.ProcFSRoot = previousFn
-	})
-
-	// Taken from a real istio-proxy container
-	const envoyCmdline = "/usr/local/bin/envoy" +
-		"-cetc/istio/proxy/envoy-rev.json" +
-		"--drain-time-s45" +
-		"--drain-strategyimmediate" +
-		"--local-address-ip-versionv4" +
-		"--file-flush-interval-msec1000" +
-		"--disable-hot-restart" +
-		"--allow-unknown-static-fields" +
-		"--log-format"
-
-	// PID 1
-	createFile(t,
-		filepath.Join(procRoot, "1", "cmdline"),
-		envoyCmdline,
-	)
-	createFile(t,
-		filepath.Join(procRoot, "1", "root/usr/local/bin/envoy"),
-		"",
-	)
-
-	// PID 2
-	createFile(t,
-		filepath.Join(procRoot, "2", "cmdline"),
-		"/bin/bash",
-	)
-
-	// PID 3
-	createFile(t,
-		filepath.Join(procRoot, "3", "cmdline"),
-		envoyCmdline,
-	)
-	createFile(t,
-		filepath.Join(procRoot, "3", "root/usr/local/bin/envoy"),
-		"",
-	)
-
-	return
-}
-
-func createFile(t *testing.T, path, data string) {
-	dir := filepath.Dir(path)
-	require.NoError(t, os.MkdirAll(dir, 0775))
-	require.NoError(t, os.WriteFile(path, []byte(data), 0775))
-}
-
-func newIstioTestMonitor(t *testing.T) *istioMonitor {
-	cfg := config.New()
+func newIstioTestMonitor(t *testing.T, procRoot string) *istioMonitor {
+	cfg := utils.NewUSMEmptyConfig()
 	cfg.EnableIstioMonitoring = true
+	cfg.ProcRoot = procRoot
 
-	monitor := newIstioMonitor(cfg, nil)
+	return newIstioTestMonitorWithCFG(t, cfg)
+}
+
+func newIstioTestMonitorWithCFG(t *testing.T, cfg *config.Config) *istioMonitor {
+	monitor, err := newIstioMonitor(cfg, nil)
+	require.NoError(t, err)
 	require.NotNil(t, monitor)
 
 	return monitor

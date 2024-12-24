@@ -16,6 +16,7 @@ import (
 
 	ddebpf "github.com/DataDog/datadog-agent/pkg/ebpf"
 	"github.com/DataDog/datadog-agent/pkg/ebpf/bytecode"
+	"github.com/DataDog/datadog-agent/pkg/ebpf/prebuilt"
 	ebpftelemetry "github.com/DataDog/datadog-agent/pkg/ebpf/telemetry"
 	"github.com/DataDog/datadog-agent/pkg/network/config"
 	netebpf "github.com/DataDog/datadog-agent/pkg/network/ebpf"
@@ -29,16 +30,12 @@ import (
 
 const probeUID = "net"
 
-//nolint:revive // TODO(NET) Fix revive linter
-type TracerType int
+type TracerType int //nolint:revive // TODO
 
 const (
-	//nolint:revive // TODO(NET) Fix revive linter
-	TracerTypePrebuilt TracerType = iota
-	//nolint:revive // TODO(NET) Fix revive linter
-	TracerTypeRuntimeCompiled
-	//nolint:revive // TODO(NET) Fix revive linter
-	TracerTypeCORE
+	TracerTypePrebuilt        TracerType = iota //nolint:revive // TODO
+	TracerTypeRuntimeCompiled                   //nolint:revive // TODO
+	TracerTypeCORE                              //nolint:revive // TODO
 )
 
 var (
@@ -48,6 +45,22 @@ var (
 	classificationMinimumKernel = kernel.VersionCode(4, 11, 0)
 
 	protocolClassificationTailCalls = []manager.TailCallRoute{
+		{
+			ProgArrayName: probes.ClassificationProgsMap,
+			Key:           netebpf.ClassificationTLSClient,
+			ProbeIdentificationPair: manager.ProbeIdentificationPair{
+				EBPFFuncName: probes.ProtocolClassifierTLSClientSocketFilter,
+				UID:          probeUID,
+			},
+		},
+		{
+			ProgArrayName: probes.ClassificationProgsMap,
+			Key:           netebpf.ClassificationTLSServer,
+			ProbeIdentificationPair: manager.ProbeIdentificationPair{
+				EBPFFuncName: probes.ProtocolClassifierTLSServerSocketFilter,
+				UID:          probeUID,
+			},
+		},
 		{
 			ProgArrayName: probes.ClassificationProgsMap,
 			Key:           netebpf.ClassificationQueues,
@@ -93,8 +106,8 @@ var (
 )
 
 // ClassificationSupported returns true if the current kernel version supports the classification feature.
-// The kernel has to be newer than 4.7.0 since we are using bpf_skb_load_bytes (4.5.0+) method to read from the socket
-// filter, and a tracepoint (4.7.0+)
+// The kernel has to be newer than 4.11.0 since we are using bpf_skb_load_bytes (4.5.0+) method which was added to
+// socket filters in 4.11.0, and a tracepoint (4.7.0+)
 func ClassificationSupported(config *config.Config) bool {
 	if !config.ProtocolClassificationEnabled {
 		return false
@@ -112,7 +125,7 @@ func ClassificationSupported(config *config.Config) bool {
 }
 
 // LoadTracer loads the co-re/prebuilt/runtime compiled network tracer, depending on config
-func LoadTracer(cfg *config.Config, mgrOpts manager.Options, connCloseEventHandler ddebpf.EventHandler, failedConnsHandler ddebpf.EventHandler) (*manager.Manager, func(), TracerType, error) {
+func LoadTracer(cfg *config.Config, mgrOpts manager.Options, connCloseEventHandler ddebpf.EventHandler, failedConnsHandler ddebpf.EventHandler) (*manager.Manager, func(), TracerType, error) { //nolint:revive // TODO
 	kprobeAttachMethod := manager.AttachKprobeWithPerfEventOpen
 	if cfg.AttachKprobesWithKprobeEventsABI {
 		kprobeAttachMethod = manager.AttachKprobeWithKprobeEvents
@@ -129,7 +142,7 @@ func LoadTracer(cfg *config.Config, mgrOpts manager.Options, connCloseEventHandl
 		var m *manager.Manager
 		var closeFn func()
 		if err == nil {
-			m, closeFn, err = coreTracerLoader(cfg, mgrOpts, connCloseEventHandler, failedConnsHandler)
+			m, closeFn, err = coreTracerLoader(cfg, mgrOpts, connCloseEventHandler)
 			// if it is a verifier error, bail always regardless of
 			// whether a fallback is enabled in config
 			var ve *ebpf.VerifierError
@@ -142,29 +155,33 @@ func LoadTracer(cfg *config.Config, mgrOpts manager.Options, connCloseEventHandl
 
 		if cfg.EnableRuntimeCompiler && cfg.AllowRuntimeCompiledFallback {
 			log.Warnf("error loading CO-RE network tracer, falling back to runtime compiled: %s", err)
-		} else if cfg.AllowPrecompiledFallback {
-			log.Warnf("error loading CO-RE network tracer, falling back to pre-compiled: %s", err)
+		} else if cfg.AllowPrebuiltFallback {
+			log.Warnf("error loading CO-RE network tracer, falling back to prebuilt: %s", err)
 		} else {
 			return nil, nil, TracerTypeCORE, fmt.Errorf("error loading CO-RE network tracer: %w", err)
 		}
 	}
 
 	if cfg.EnableRuntimeCompiler && (!cfg.EnableCORE || cfg.AllowRuntimeCompiledFallback) {
-		m, closeFn, err := rcTracerLoader(cfg, mgrOpts, connCloseEventHandler, failedConnsHandler)
+		m, closeFn, err := rcTracerLoader(cfg, mgrOpts, connCloseEventHandler)
 		if err == nil {
 			return m, closeFn, TracerTypeRuntimeCompiled, err
 		}
 
-		if !cfg.AllowPrecompiledFallback {
+		if !cfg.AllowPrebuiltFallback {
 			return nil, nil, TracerTypeRuntimeCompiled, fmt.Errorf("error compiling network tracer: %w", err)
 		}
 
-		log.Warnf("error compiling network tracer, falling back to pre-compiled: %s", err)
+		log.Warnf("error compiling network tracer, falling back to prebuilt: %s", err)
+	}
+
+	if prebuilt.IsDeprecated() {
+		log.Warn("using deprecated prebuilt network tracer")
 	}
 
 	offsets, err := tracerOffsetGuesserRunner(cfg)
 	if err != nil {
-		return nil, nil, TracerTypePrebuilt, fmt.Errorf("error loading prebuilt tracer: error guessing offsets: %s", err)
+		return nil, nil, TracerTypePrebuilt, fmt.Errorf("error loading prebuilt tracer: error guessing offsets: %w", err)
 	}
 
 	mgrOpts.ConstantEditors = append(mgrOpts.ConstantEditors, offsets...)
@@ -173,19 +190,15 @@ func LoadTracer(cfg *config.Config, mgrOpts manager.Options, connCloseEventHandl
 	return m, closeFn, TracerTypePrebuilt, err
 }
 
-func loadTracerFromAsset(buf bytecode.AssetReader, runtimeTracer, coreTracer bool, config *config.Config, mgrOpts manager.Options, connCloseEventHandler ddebpf.EventHandler, failedConnsHandler ddebpf.EventHandler) (*manager.Manager, func(), error) {
-	m := ddebpf.NewManagerWithDefault(&manager.Manager{}, &ebpftelemetry.ErrorsTelemetryModifier{})
-	if err := initManager(m, connCloseEventHandler, failedConnsHandler, runtimeTracer, config); err != nil {
+func loadTracerFromAsset(buf bytecode.AssetReader, runtimeTracer, coreTracer bool, config *config.Config, mgrOpts manager.Options, connCloseEventHandler ddebpf.EventHandler) (*manager.Manager, func(), error) {
+	m := ddebpf.NewManagerWithDefault(&manager.Manager{}, "network", &ebpftelemetry.ErrorsTelemetryModifier{})
+	if err := initManager(m, connCloseEventHandler, runtimeTracer, config); err != nil {
 		return nil, nil, fmt.Errorf("could not initialize manager: %w", err)
 	}
-	ringbufferEnabled := false
 	switch connCloseEventHandler.(type) {
 	case *ddebpf.RingBufferHandler:
-		ringbufferEnabled = true
-	}
-	util.AddBoolConst(&mgrOpts, "ringbuffers_enabled", ringbufferEnabled)
-	if ringbufferEnabled {
 		util.EnableRingbuffersViaMapEditor(&mgrOpts)
+		util.AddBoolConst(&mgrOpts, "ringbuffers_enabled", true)
 	}
 
 	var undefinedProbes []manager.ProbeIdentificationPair
@@ -273,32 +286,32 @@ func loadTracerFromAsset(buf bytecode.AssetReader, runtimeTracer, coreTracer boo
 	return m.Manager, closeProtocolClassifierSocketFilterFn, nil
 }
 
-func loadCORETracer(config *config.Config, mgrOpts manager.Options, connCloseEventHandler ddebpf.EventHandler, failedConnsHandler ddebpf.EventHandler) (*manager.Manager, func(), error) {
+func loadCORETracer(config *config.Config, mgrOpts manager.Options, connCloseEventHandler ddebpf.EventHandler) (*manager.Manager, func(), error) {
 	var m *manager.Manager
 	var closeFn func()
 	var err error
 	err = ddebpf.LoadCOREAsset(netebpf.ModuleFileName("tracer", config.BPFDebug), func(ar bytecode.AssetReader, o manager.Options) error {
-		o.RLimit = mgrOpts.RLimit
+		o.RemoveRlimit = mgrOpts.RemoveRlimit
 		o.MapSpecEditors = mgrOpts.MapSpecEditors
 		o.ConstantEditors = mgrOpts.ConstantEditors
 		o.DefaultKprobeAttachMethod = mgrOpts.DefaultKprobeAttachMethod
 		o.DefaultKProbeMaxActive = mgrOpts.DefaultKProbeMaxActive
 		o.BypassEnabled = mgrOpts.BypassEnabled
-		m, closeFn, err = tracerLoaderFromAsset(ar, false, true, config, o, connCloseEventHandler, failedConnsHandler)
+		m, closeFn, err = tracerLoaderFromAsset(ar, false, true, config, o, connCloseEventHandler)
 		return err
 	})
 
 	return m, closeFn, err
 }
 
-func loadRuntimeCompiledTracer(config *config.Config, mgrOpts manager.Options, connCloseEventHandler ddebpf.EventHandler, failedConnsHandler ddebpf.EventHandler) (*manager.Manager, func(), error) {
+func loadRuntimeCompiledTracer(config *config.Config, mgrOpts manager.Options, connCloseEventHandler ddebpf.EventHandler) (*manager.Manager, func(), error) {
 	buf, err := getRuntimeCompiledTracer(config)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer buf.Close()
 
-	return tracerLoaderFromAsset(buf, true, false, config, mgrOpts, connCloseEventHandler, failedConnsHandler)
+	return tracerLoaderFromAsset(buf, true, false, config, mgrOpts, connCloseEventHandler)
 }
 
 func loadPrebuiltTracer(config *config.Config, mgrOpts manager.Options, connCloseEventHandler ddebpf.EventHandler) (*manager.Manager, func(), error) {
@@ -317,7 +330,7 @@ func loadPrebuiltTracer(config *config.Config, mgrOpts manager.Options, connClos
 		config.CollectUDPv6Conns = false
 	}
 
-	return tracerLoaderFromAsset(buf, false, false, config, mgrOpts, connCloseEventHandler, nil)
+	return tracerLoaderFromAsset(buf, false, false, config, mgrOpts, connCloseEventHandler)
 }
 
 func isCORETracerSupported() error {

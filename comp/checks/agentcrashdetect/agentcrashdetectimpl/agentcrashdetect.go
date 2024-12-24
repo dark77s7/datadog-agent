@@ -168,16 +168,27 @@ func (wcd *AgentCrashDetect) Run() error {
 	}
 
 	log.Infof("Sending crash: %v", formatText(crash))
-	lts := internaltelemetry.NewClient(wcd.tconfig.NewHTTPClient(), wcd.tconfig.TelemetryConfig.Endpoints, "ddnpm", true)
+	lts := internaltelemetry.NewClient(wcd.tconfig.NewHTTPClient(), toTelemEndpoints(wcd.tconfig.TelemetryConfig.Endpoints), "ddnpm", true)
 	lts.SendLog("WARN", formatText(crash))
 	return nil
+}
+
+func toTelemEndpoints(endpoints []*traceconfig.Endpoint) []*internaltelemetry.Endpoint {
+	telemEndpoints := make([]*internaltelemetry.Endpoint, 0, len(endpoints))
+	for _, e := range endpoints {
+		telemEndpoints = append(telemEndpoints, &internaltelemetry.Endpoint{
+			Host:   e.Host,
+			APIKey: e.APIKey,
+		})
+	}
+	return telemEndpoints
 }
 
 func newAgentCrashComponent(deps dependencies) agentcrashdetect.Component {
 	instance := &agentCrashComponent{}
 	instance.tconfig = deps.TConfig.Object()
 	deps.Lifecycle.Append(fx.Hook{
-		OnStart: func(ctx context.Context) error {
+		OnStart: func(_ context.Context) error {
 			core.RegisterCheck(CheckName, optional.NewOption(func() check.Check {
 				checkInstance := &AgentCrashDetect{
 					CheckBase:   core.NewCheckBase(CheckName),

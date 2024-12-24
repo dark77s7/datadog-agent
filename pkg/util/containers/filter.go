@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/DataDog/datadog-agent/pkg/config"
+	pkgconfigsetup "github.com/DataDog/datadog-agent/pkg/config/setup"
 	"github.com/DataDog/datadog-agent/pkg/util/log"
 )
 
@@ -112,6 +112,7 @@ func parseFilters(filters []string) (imageFilters, nameFilters, namespaceFilters
 	for _, filter := range filters {
 		switch {
 		case strings.HasPrefix(filter, imageFilterPrefix):
+			filter = preprocessImageFilter(filter)
 			r, err := filterToRegex(filter, imageFilterPrefix)
 			if err != nil {
 				filterErrs = append(filterErrs, err.Error())
@@ -134,7 +135,7 @@ func parseFilters(filters []string) (imageFilters, nameFilters, namespaceFilters
 			namespaceFilters = append(namespaceFilters, r)
 		default:
 			warnmsg := fmt.Sprintf("Container filter %q is unknown, ignoring it. The supported filters are 'image', 'name' and 'kube_namespace'", filter)
-			log.Warnf(warnmsg)
+			log.Warn(warnmsg)
 			filterWarnings = append(filterWarnings, warnmsg)
 
 		}
@@ -143,6 +144,19 @@ func parseFilters(filters []string) (imageFilters, nameFilters, namespaceFilters
 		return nil, nil, nil, append(filterErrs, filterWarnings...), errors.New(filterErrs[0])
 	}
 	return imageFilters, nameFilters, namespaceFilters, filterWarnings, nil
+}
+
+// preprocessImageFilter modifies image filters having the format `name$`, where {name} doesn't include a colon (e.g. nginx$, ^nginx$), to
+// `name:.*`.
+// This is done so that image filters can still match even if the matched image contains the tag or digest.
+func preprocessImageFilter(imageFilter string) string {
+	regexVal := strings.TrimPrefix(imageFilter, imageFilterPrefix)
+	if strings.HasSuffix(regexVal, "$") && !strings.Contains(regexVal, ":") {
+		mutatedRegexVal := regexVal[:len(regexVal)-1] + "(@sha256)?:.*"
+		return imageFilterPrefix + mutatedRegexVal
+	}
+
+	return imageFilter
 }
 
 // filterToRegex checks a filter's regex
@@ -173,7 +187,7 @@ func GetSharedMetricFilter() (*Filter, error) {
 // GetPauseContainerFilter returns a filter only excluding pause containers
 func GetPauseContainerFilter() (*Filter, error) {
 	var excludeList []string
-	if config.Datadog().GetBool("exclude_pause_container") {
+	if pkgconfigsetup.Datadog().GetBool("exclude_pause_container") {
 		excludeList = append(excludeList,
 			pauseContainerGCR,
 			pauseContainerOpenshift,
@@ -256,21 +270,21 @@ func NewFilter(ft FilterType, includeList, excludeList []string) (*Filter, error
 func newMetricFilterFromConfig() (*Filter, error) {
 	// We merge `container_include` and `container_include_metrics` as this filter
 	// is used by all core and python checks (so components sending metrics).
-	includeList := config.Datadog().GetStringSlice("container_include")
-	excludeList := config.Datadog().GetStringSlice("container_exclude")
-	includeList = append(includeList, config.Datadog().GetStringSlice("container_include_metrics")...)
-	excludeList = append(excludeList, config.Datadog().GetStringSlice("container_exclude_metrics")...)
+	includeList := pkgconfigsetup.Datadog().GetStringSlice("container_include")
+	excludeList := pkgconfigsetup.Datadog().GetStringSlice("container_exclude")
+	includeList = append(includeList, pkgconfigsetup.Datadog().GetStringSlice("container_include_metrics")...)
+	excludeList = append(excludeList, pkgconfigsetup.Datadog().GetStringSlice("container_exclude_metrics")...)
 
 	if len(includeList) == 0 {
 		// support legacy "ac_include" config
-		includeList = config.Datadog().GetStringSlice("ac_include")
+		includeList = pkgconfigsetup.Datadog().GetStringSlice("ac_include")
 	}
 	if len(excludeList) == 0 {
 		// support legacy "ac_exclude" config
-		excludeList = config.Datadog().GetStringSlice("ac_exclude")
+		excludeList = pkgconfigsetup.Datadog().GetStringSlice("ac_exclude")
 	}
 
-	if config.Datadog().GetBool("exclude_pause_container") {
+	if pkgconfigsetup.Datadog().GetBool("exclude_pause_container") {
 		excludeList = append(excludeList,
 			pauseContainerGCR,
 			pauseContainerOpenshift,
@@ -303,22 +317,22 @@ func NewAutodiscoveryFilter(ft FilterType) (*Filter, error) {
 	excludeList := []string{}
 	switch ft {
 	case GlobalFilter:
-		includeList = config.Datadog().GetStringSlice("container_include")
-		excludeList = config.Datadog().GetStringSlice("container_exclude")
+		includeList = pkgconfigsetup.Datadog().GetStringSlice("container_include")
+		excludeList = pkgconfigsetup.Datadog().GetStringSlice("container_exclude")
 		if len(includeList) == 0 {
 			// fallback and support legacy "ac_include" config
-			includeList = config.Datadog().GetStringSlice("ac_include")
+			includeList = pkgconfigsetup.Datadog().GetStringSlice("ac_include")
 		}
 		if len(excludeList) == 0 {
 			// fallback and support legacy "ac_exclude" config
-			excludeList = config.Datadog().GetStringSlice("ac_exclude")
+			excludeList = pkgconfigsetup.Datadog().GetStringSlice("ac_exclude")
 		}
 	case MetricsFilter:
-		includeList = config.Datadog().GetStringSlice("container_include_metrics")
-		excludeList = config.Datadog().GetStringSlice("container_exclude_metrics")
+		includeList = pkgconfigsetup.Datadog().GetStringSlice("container_include_metrics")
+		excludeList = pkgconfigsetup.Datadog().GetStringSlice("container_exclude_metrics")
 	case LogsFilter:
-		includeList = config.Datadog().GetStringSlice("container_include_logs")
-		excludeList = config.Datadog().GetStringSlice("container_exclude_logs")
+		includeList = pkgconfigsetup.Datadog().GetStringSlice("container_include_logs")
+		excludeList = pkgconfigsetup.Datadog().GetStringSlice("container_exclude_logs")
 	}
 	return NewFilter(ft, includeList, excludeList)
 }
@@ -327,7 +341,16 @@ func NewAutodiscoveryFilter(ft FilterType) (*Filter, error) {
 // based on the filters in the containerFilter instance. Consider also using
 // Note: exclude filters are not applied to empty container names, empty
 // images and empty namespaces.
+//
+// containerImage may or may not contain the image tag or image digest. (e.g. nginx:latest and nginx are both valid)
 func (cf Filter) IsExcluded(annotations map[string]string, containerName, containerImage, podNamespace string) bool {
+
+	// If containerImage doesn't include the tag or digest, add a colon so that it
+	// can match image filters
+	if len(containerImage) > 0 && !strings.Contains(containerImage, ":") {
+		containerImage += ":"
+	}
+
 	if cf.isExcludedByAnnotation(annotations, containerName) {
 		return true
 	}

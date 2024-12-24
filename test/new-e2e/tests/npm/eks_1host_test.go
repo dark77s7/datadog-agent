@@ -17,11 +17,13 @@ import (
 	kubeComp "github.com/DataDog/test-infra-definitions/components/kubernetes"
 	"github.com/DataDog/test-infra-definitions/resources/aws"
 	"github.com/DataDog/test-infra-definitions/scenarios/aws/ec2"
+	"github.com/DataDog/test-infra-definitions/scenarios/aws/eks"
 
 	"github.com/DataDog/datadog-agent/test/new-e2e/pkg/components"
 	"github.com/DataDog/datadog-agent/test/new-e2e/pkg/e2e"
 	"github.com/DataDog/datadog-agent/test/new-e2e/pkg/environments"
-	envkube "github.com/DataDog/datadog-agent/test/new-e2e/pkg/environments/aws/kubernetes"
+	"github.com/DataDog/datadog-agent/test/new-e2e/pkg/provisioners"
+	envkube "github.com/DataDog/datadog-agent/test/new-e2e/pkg/provisioners/aws/kubernetes"
 
 	"github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes"
 )
@@ -37,7 +39,7 @@ type eksVMSuite struct {
 	e2e.BaseSuite[eksHttpbinEnv]
 }
 
-func eksHttpbinEnvProvisioner() e2e.PulumiEnvRunFunc[eksHttpbinEnv] {
+func eksHttpbinEnvProvisioner(opts ...envkube.ProvisionerOption) provisioners.PulumiEnvRunFunc[eksHttpbinEnv] {
 	return func(ctx *pulumi.Context, env *eksHttpbinEnv) error {
 		awsEnv, err := aws.NewEnvironment(ctx)
 		if err != nil {
@@ -65,17 +67,22 @@ func eksHttpbinEnvProvisioner() e2e.PulumiEnvRunFunc[eksHttpbinEnv] {
 			return err
 		}
 
-		npmToolsWorkload := func(e config.Env, kubeProvider *kubernetes.Provider) (*kubeComp.Workload, error) {
+		npmToolsWorkload := func(_ config.Env, kubeProvider *kubernetes.Provider) (*kubeComp.Workload, error) {
 			// NPM tools Workload
 			testURL := "http://" + env.HTTPBinHost.Address + "/"
 			return npmtools.K8sAppDefinition(&awsEnv, kubeProvider, "npmtools", testURL)
 		}
 
-		params := envkube.GetProvisionerParams(
+		provisionerOpts := []envkube.ProvisionerOption{
 			envkube.WithAwsEnv(&awsEnv),
-			envkube.WithEKSLinuxNodeGroup(),
+			envkube.WithEKSOptions(eks.WithLinuxNodeGroup()),
 			envkube.WithAgentOptions(kubernetesagentparams.WithHelmValues(systemProbeConfigNPMHelmValues)),
 			envkube.WithWorkloadApp(npmToolsWorkload),
+		}
+		provisionerOpts = append(provisionerOpts, opts...)
+
+		params := envkube.GetProvisionerParams(
+			provisionerOpts...,
 		)
 		envkube.EKSRunFunc(ctx, &env.Kubernetes, params)
 
@@ -88,7 +95,7 @@ func TestEKSVMSuite(t *testing.T) {
 	t.Parallel()
 
 	s := &eksVMSuite{}
-	e2eParams := []e2e.SuiteOption{e2e.WithProvisioner(e2e.NewTypedPulumiProvisioner("eksHttpbin", eksHttpbinEnvProvisioner(), nil))}
+	e2eParams := []e2e.SuiteOption{e2e.WithProvisioner(provisioners.NewTypedPulumiProvisioner("eksHttpbin", eksHttpbinEnvProvisioner(), nil))}
 
 	e2e.Run(t, s, e2eParams...)
 }
@@ -96,7 +103,6 @@ func TestEKSVMSuite(t *testing.T) {
 // BeforeTest will be called before each test
 func (v *eksVMSuite) BeforeTest(suiteName, testName string) {
 	v.BaseSuite.BeforeTest(suiteName, testName)
-
 	// default is to reset the current state of the fakeintake aggregators
 	if !v.BaseSuite.IsDevMode() {
 		v.Env().FakeIntake.Client().FlushServerAndResetAggregators()

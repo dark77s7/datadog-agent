@@ -9,6 +9,7 @@ package http2
 
 /*
 #include "../../ebpf/c/conn_tuple.h"
+#include "../../ebpf/c/protocols/events-types.h"
 #include "../../ebpf/c/protocols/http2/decoding-defs.h"
 */
 import "C"
@@ -35,7 +36,7 @@ type http2Path C.path_t
 type HTTP2Stream C.http2_stream_t
 type EbpfTx C.http2_event_t
 type HTTP2Telemetry C.http2_telemetry_t
-type HTTP2RemainderEntry C.frame_header_remainder_t
+type HTTP2IncompleteFrameEntry C.incomplete_frame_t
 
 type StaticTableEnumValue = C.static_table_value_t
 

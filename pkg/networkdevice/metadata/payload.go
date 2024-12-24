@@ -6,8 +6,6 @@
 // Package metadata defines types for describing data about a device.
 package metadata
 
-import "github.com/DataDog/datadog-agent/pkg/snmp/gosnmplib"
-
 // PayloadMetadataBatchSize is the number of resources per event payload
 // Resources are devices, interfaces, etc
 const PayloadMetadataBatchSize = 100
@@ -77,8 +75,10 @@ type DeviceMetadata struct {
 
 // DeviceOID device scan oid data
 type DeviceOID struct {
-	*gosnmplib.PDU
 	DeviceID string `json:"device_id"`
+	OID      string `json:"oid"`
+	Type     string `json:"type"`
+	Value    string `json:"value"`
 }
 
 // InterfaceMetadata contains interface metadata
@@ -131,10 +131,11 @@ type TopologyLinkSide struct {
 
 // TopologyLinkMetadata contains topology interface to interface links metadata
 type TopologyLinkMetadata struct {
-	ID         string            `json:"id"`
-	SourceType string            `json:"source_type"`
-	Local      *TopologyLinkSide `json:"local"`
-	Remote     *TopologyLinkSide `json:"remote"`
+	ID          string            `json:"id"`
+	SourceType  string            `json:"source_type"`
+	Integration string            `json:"integration,omitempty"`
+	Local       *TopologyLinkSide `json:"local"`
+	Remote      *TopologyLinkSide `json:"remote"`
 }
 
 // NetflowExporter contains netflow exporters info

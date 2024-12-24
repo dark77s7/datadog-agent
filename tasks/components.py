@@ -96,8 +96,6 @@ components_classic_style = [
     'comp/core/configsync/configsyncimpl',
     'comp/core/gui/guiimpl',
     'comp/core/hostname/hostnameimpl',
-    'comp/core/log/logimpl',
-    'comp/core/log/tracelogimpl',
     'comp/core/pid/pidimpl',
     'comp/core/secrets/secretsimpl',
     'comp/core/settings/settingsimpl',
@@ -143,7 +141,6 @@ components_classic_style = [
     'comp/remote-config/rcservicemrf/rcservicemrfimpl',
     'comp/remote-config/rcstatus/rcstatusimpl',
     'comp/remote-config/rctelemetryreporter/rctelemetryreporterimpl',
-    'comp/serializer/compression/compressionimpl',
     'comp/snmptraps/config/configimpl',
     'comp/snmptraps/formatter/formatterimpl',
     'comp/snmptraps/forwarder/forwarderimpl',
@@ -166,32 +163,19 @@ components_classic_style = [
 # Please do not add a new component to this list.
 components_missing_implementation_folder = [
     "comp/dogstatsd/statsd",
-    "comp/core/tagger",
     "comp/forwarder/orchestrator/orchestratorinterface",
     "comp/core/hostname/hostnameinterface",
-    "comp/core/hostname/remotehostnameimpl",
-    # // TODO: (components), broken by new linter rules, fix in a follow-up PR
+]
+
+ignore_fx_import = [
+    "comp/core/workloadmeta",
     "comp/rdnsquerier",
-    "comp/dogstatsd/replay",
-    "comp/otelcol/extension",
     "comp/trace/agent",
-    "comp/core/workloadmeta",
 ]
 
-# // TODO: (components), broken by new linter rules, fix in a follow-up PR
-ignore_package_name = [
-    "comp/trace/agent",
-    "comp/trace/compression",
+ignore_provide_component_constructor_missing = [
     "comp/core/workloadmeta",
-    "comp/core/healthprobe",
-    "comp/otelcol/collector",
-    "comp/otelcol/collector-contrib",
-    "comp/metadata/securityagent",
-    "comp/metadata/systemprobe",
-]
-
-ignore_fx_usage = [
-    "comp/otelcol/collector-contrib",
+    "comp/trace/agent",
 ]
 
 mock_definitions = [
@@ -225,8 +209,7 @@ def check_component_contents_and_file_hiearchy(comp):
     # Definition file `component.go` (v1) or `def/component.go` (v2) must use `package <compname>`
     pkgname = parse_package_name(comp.def_file)
     if pkgname != comp.name:
-        if comp.path not in ignore_package_name:
-            return f"** {comp.def_file} has wrong package name '{pkgname}', must be '{comp.name}'"
+        return f"** {comp.def_file} has wrong package name '{pkgname}', must be '{comp.name}'"
 
     # Definition file `component.go` (v1) or `def/component.go` (v2) must not contain a mock definition
     for mock_definition in mock_definitions:
@@ -247,9 +230,16 @@ def check_component_contents_and_file_hiearchy(comp):
         for src_file in locate_nontest_source_files(impl_folders):
             pkgname = parse_package_name(src_file)
             expectname = comp.name + 'impl'
+
+            for part in src_file.parts:
+                if "impl-" in part:
+                    parts = part.split("-")
+                    expectname = parts[1] + 'impl'
+
             if pkgname != expectname:
-                if comp.path not in ignore_package_name:
-                    return f"** {src_file} has wrong package name '{pkgname}', must be '{expectname}'"
+                return f"** {src_file} has wrong package name '{pkgname}', must be '{expectname}'"
+            if comp.path in ignore_fx_import:
+                continue
             src_content = read_file_content(src_file)
             if 'go.uber.org/fx' in src_content:
                 return f"** {src_file} should not import 'go.uber.org/fx' because it a component implementation"
@@ -257,15 +247,14 @@ def check_component_contents_and_file_hiearchy(comp):
                 return f"** {src_file} should not import 'fxutil' because it a component implementation"
         # FX files should use correct filename and package name, and call ProvideComponentConstructor
         for src_file in locate_fx_source_files(root_path):
-            if comp.path in ignore_fx_usage:
-                continue
             if src_file.name != 'fx.go':
                 return f"** {src_file} should be named 'fx.go'"
             pkgname = parse_package_name(src_file)
             expectname = comp.name + 'fx'
             if pkgname != 'fx' and pkgname != expectname:
-                if comp.path not in ignore_package_name:
-                    return f"** {src_file} has wrong package name '{pkgname}', must be 'fx' or '{expectname}'"
+                return f"** {src_file} has wrong package name '{pkgname}', must be 'fx' or '{expectname}'"
+            if comp.path in ignore_provide_component_constructor_missing:
+                continue
             src_content = read_file_content(src_file)
             if 'ProvideComponentConstructor' not in src_content:
                 return f"** {src_file} should call ProvideComponentConstructor to convert regular constructor into fx-aware"

@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"path"
 	"runtime"
 	"testing"
 
@@ -22,7 +21,6 @@ import (
 	"github.com/DataDog/datadog-agent/comp/core"
 	"github.com/DataDog/datadog-agent/comp/core/flare"
 	"github.com/DataDog/datadog-agent/comp/core/secrets"
-	"github.com/DataDog/datadog-agent/pkg/config"
 	configmock "github.com/DataDog/datadog-agent/pkg/config/mock"
 	"github.com/DataDog/datadog-agent/pkg/util/fxutil"
 )
@@ -31,25 +29,44 @@ type commandTestSuite struct {
 	suite.Suite
 	sysprobeSocketPath string
 	tcpServer          *httptest.Server
+	tcpTLSServer       *httptest.Server
 	unixServer         *httptest.Server
+	systemProbeServer  *httptest.Server
 }
 
 func (c *commandTestSuite) SetupSuite() {
 	t := c.T()
-	c.sysprobeSocketPath = path.Join(t.TempDir(), "sysprobe.sock")
-	c.tcpServer, c.unixServer = c.getPprofTestServer()
+	c.sysprobeSocketPath = sysprobeSocketPath(t)
 }
 
-func (c *commandTestSuite) TearDownSuite() {
-	c.tcpServer.Close()
-	if c.unixServer != nil {
-		c.unixServer.Close()
-	}
-}
-
-func (c *commandTestSuite) getPprofTestServer() (tcpServer *httptest.Server, unixServer *httptest.Server) {
+// startTestServers starts test servers from a clean state to ensure no cache responses are used.
+// This should be called by each test that requires them.
+func (c *commandTestSuite) startTestServers() {
 	t := c.T()
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	c.tcpServer, c.tcpTLSServer, c.unixServer, c.systemProbeServer = c.getPprofTestServer()
+
+	t.Cleanup(func() {
+		if c.tcpServer != nil {
+			c.tcpServer.Close()
+			c.tcpServer = nil
+		}
+		if c.tcpTLSServer != nil {
+			c.tcpTLSServer.Close()
+			c.tcpTLSServer = nil
+		}
+		if c.unixServer != nil {
+			c.unixServer.Close()
+			c.unixServer = nil
+		}
+		if c.systemProbeServer != nil {
+			c.systemProbeServer.Close()
+			c.systemProbeServer = nil
+		}
+	})
+}
+
+func newMockHandler() http.HandlerFunc {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/debug/pprof/heap":
 			w.Write([]byte("heap_profile"))
@@ -68,17 +85,29 @@ func (c *commandTestSuite) getPprofTestServer() (tcpServer *httptest.Server, uni
 			w.WriteHeader(500)
 		}
 	})
+}
 
+func (c *commandTestSuite) getPprofTestServer() (tcpServer *httptest.Server, tcpTLSServer *httptest.Server, unixServer *httptest.Server, sysProbeServer *httptest.Server) {
+	var err error
+	t := c.T()
+
+	handler := newMockHandler()
 	tcpServer = httptest.NewServer(handler)
+	tcpTLSServer = httptest.NewTLSServer(handler)
 	if runtime.GOOS == "linux" {
 		unixServer = httptest.NewUnstartedServer(handler)
-		var err error
 		unixServer.Listener, err = net.Listen("unix", c.sysprobeSocketPath)
 		require.NoError(t, err, "could not create listener for unix socket on %s", c.sysprobeSocketPath)
 		unixServer.Start()
 	}
 
-	return tcpServer, unixServer
+	sysProbeServer, err = NewSystemProbeTestServer(handler)
+	require.NoError(c.T(), err, "could not restart system probe server")
+	if sysProbeServer != nil {
+		sysProbeServer.Start()
+	}
+
+	return tcpServer, tcpTLSServer, unixServer, sysProbeServer
 }
 
 func TestCommandTestSuite(t *testing.T) {
@@ -87,23 +116,27 @@ func TestCommandTestSuite(t *testing.T) {
 
 func (c *commandTestSuite) TestReadProfileData() {
 	t := c.T()
+	c.startTestServers()
+
 	u, err := url.Parse(c.tcpServer.URL)
 	require.NoError(t, err)
 	port := u.Port()
 
+	u, err = url.Parse(c.tcpTLSServer.URL)
+	require.NoError(t, err)
+	httpsPort := u.Port()
+
 	mockConfig := configmock.New(t)
 	mockConfig.SetWithoutSource("expvar_port", port)
 	mockConfig.SetWithoutSource("apm_config.enabled", true)
-	mockConfig.SetWithoutSource("apm_config.debug.port", port)
+	mockConfig.SetWithoutSource("apm_config.debug.port", httpsPort)
 	mockConfig.SetWithoutSource("apm_config.receiver_timeout", "10")
 	mockConfig.SetWithoutSource("process_config.expvar_port", port)
 	mockConfig.SetWithoutSource("security_agent.expvar_port", port)
 
-	mockSysProbeConfig := config.MockSystemProbe(t)
-	mockSysProbeConfig.SetWithoutSource("system_probe_config.enabled", true)
-	if runtime.GOOS == "windows" {
-		mockSysProbeConfig.SetWithoutSource("system_probe_config.sysprobe_socket", u.Host)
-	} else {
+	if runtime.GOOS != "darwin" {
+		mockSysProbeConfig := configmock.NewSystemProbe(t)
+		mockSysProbeConfig.SetWithoutSource("system_probe_config.enabled", true)
 		mockSysProbeConfig.SetWithoutSource("system_probe_config.sysprobe_socket", c.sysprobeSocketPath)
 	}
 
@@ -155,6 +188,8 @@ func (c *commandTestSuite) TestReadProfileData() {
 
 func (c *commandTestSuite) TestReadProfileDataNoTraceAgent() {
 	t := c.T()
+	c.startTestServers()
+
 	u, err := url.Parse(c.tcpServer.URL)
 	require.NoError(t, err)
 	port := u.Port()
@@ -167,13 +202,9 @@ func (c *commandTestSuite) TestReadProfileDataNoTraceAgent() {
 	mockConfig.SetWithoutSource("process_config.expvar_port", port)
 	mockConfig.SetWithoutSource("security_agent.expvar_port", port)
 
-	mockSysProbeConfig := config.MockSystemProbe(t)
+	mockSysProbeConfig := configmock.NewSystemProbe(t)
 	mockSysProbeConfig.SetWithoutSource("system_probe_config.enabled", true)
-	if runtime.GOOS == "windows" {
-		mockSysProbeConfig.SetWithoutSource("system_probe_config.sysprobe_socket", u.Host)
-	} else {
-		mockSysProbeConfig.SetWithoutSource("system_probe_config.sysprobe_socket", c.sysprobeSocketPath)
-	}
+	mockSysProbeConfig.SetWithoutSource("system_probe_config.sysprobe_socket", c.sysprobeSocketPath)
 
 	data, err := readProfileData(10)
 	require.Error(t, err)
@@ -218,6 +249,8 @@ func (c *commandTestSuite) TestReadProfileDataNoTraceAgent() {
 
 func (c *commandTestSuite) TestReadProfileDataErrors() {
 	t := c.T()
+	c.startTestServers()
+
 	mockConfig := configmock.New(t)
 	// setting Core Agent Expvar port to 0 to ensure failing on fetch (using the default value can lead to
 	// successful request when running next to an Agent)
@@ -227,9 +260,13 @@ func (c *commandTestSuite) TestReadProfileDataErrors() {
 	mockConfig.SetWithoutSource("process_config.enabled", true)
 	mockConfig.SetWithoutSource("process_config.expvar_port", 0)
 
+	mockSysProbeConfig := configmock.NewSystemProbe(t)
+	InjectConnectionFailures(mockSysProbeConfig, mockConfig)
+
 	data, err := readProfileData(10)
+
 	require.Error(t, err)
-	require.Regexp(t, "^4 errors occurred:\n", err.Error())
+	CheckExpectedConnectionFailures(c, err)
 	require.Len(t, data, 0)
 }
 
@@ -239,7 +276,7 @@ func (c *commandTestSuite) TestCommand() {
 		Commands(&command.GlobalParams{}),
 		[]string{"flare", "1234"},
 		makeFlare,
-		func(cliParams *cliParams, coreParams core.BundleParams, secretParams secrets.Params) {
+		func(cliParams *cliParams, _ core.BundleParams, secretParams secrets.Params) {
 			require.Equal(t, []string{"1234"}, cliParams.args)
 			require.Equal(t, true, secretParams.Enabled)
 		})

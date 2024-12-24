@@ -8,25 +8,23 @@
 package usm
 
 import (
-	"bytes"
 	"fmt"
-	"os"
-	"sync"
-	"time"
-
-	"github.com/DataDog/datadog-agent/pkg/network/config"
-	"github.com/DataDog/datadog-agent/pkg/network/usm/utils"
-	"github.com/DataDog/datadog-agent/pkg/process/monitor"
-	"github.com/DataDog/datadog-agent/pkg/util/kernel"
-	"github.com/DataDog/datadog-agent/pkg/util/log"
-	ddsync "github.com/DataDog/datadog-agent/pkg/util/sync"
+	"strings"
 
 	manager "github.com/DataDog/ebpf-manager"
+
+	"github.com/DataDog/datadog-agent/pkg/ebpf/uprobes"
+	"github.com/DataDog/datadog-agent/pkg/network/config"
+	"github.com/DataDog/datadog-agent/pkg/network/usm/consts"
+	"github.com/DataDog/datadog-agent/pkg/process/monitor"
+	"github.com/DataDog/datadog-agent/pkg/util/log"
 )
 
 const (
 	istioSslReadRetprobe  = "istio_uretprobe__SSL_read"
 	istioSslWriteRetprobe = "istio_uretprobe__SSL_write"
+
+	istioAttacherName = "istio"
 )
 
 var istioProbes = []manager.ProbesSelector{
@@ -76,16 +74,6 @@ var istioProbes = []manager.ProbesSelector{
 	},
 }
 
-// envoyCmd represents the search term used for determining
-// whether or not a given PID represents an Envoy process.
-// The search is done over the /proc/<pid>/cmdline file.
-var envoyCmd = []byte("/bin/envoy")
-
-// readBufferPool is used for reading /proc/<pid>/cmdline files.
-// We use a pointer to a slice to avoid allocations when casting
-// values to the empty interface during Put() calls.
-var readBufferPool = ddsync.NewSlicePool[byte](128, 128)
-
 // istioMonitor essentially scans for Envoy processes and attaches SSL uprobes
 // to them.
 //
@@ -93,61 +81,41 @@ var readBufferPool = ddsync.NewSlicePool[byte](128, 128)
 // because the Envoy binary embedded in the Istio containers have debug symbols
 // whereas the "vanilla" Envoy images are distributed without them.
 type istioMonitor struct {
-	registry *utils.FileRegistry
-	procRoot string
-
-	// `utils.FileRegistry` callbacks
-	registerCB   func(utils.FilePath) error
-	unregisterCB func(utils.FilePath) error
-
-	// Termination
-	wg   sync.WaitGroup
-	done chan struct{}
+	attacher       *uprobes.UprobeAttacher
+	envoyCmd       string
+	processMonitor *monitor.ProcessMonitor
 }
 
-// Validate that istioMonitor implements the Attacher interface.
-var _ utils.Attacher = &istioMonitor{}
-
-func newIstioMonitor(c *config.Config, mgr *manager.Manager) *istioMonitor {
+func newIstioMonitor(c *config.Config, mgr *manager.Manager) (*istioMonitor, error) {
 	if !c.EnableIstioMonitoring {
-		return nil
+		return nil, nil
 	}
 
-	procRoot := kernel.ProcFSRoot()
-	return &istioMonitor{
-		registry: utils.NewFileRegistry("istio"),
-		procRoot: procRoot,
-		done:     make(chan struct{}),
-
-		// Callbacks
-		registerCB:   addHooks(mgr, procRoot, istioProbes),
-		unregisterCB: removeHooks(mgr, istioProbes),
-	}
-}
-
-// DetachPID detaches a given pid from the eBPF program
-func (m *istioMonitor) DetachPID(pid uint32) error {
-	return m.registry.Unregister(pid)
-}
-
-var (
-	// ErrNoEnvoyPath is returned when no envoy path is found for a given PID
-	ErrNoEnvoyPath = fmt.Errorf("no envoy path found for PID")
-)
-
-// AttachPID attaches a given pid to the eBPF program
-func (m *istioMonitor) AttachPID(pid uint32) error {
-	path := m.getEnvoyPath(pid)
-	if path == "" {
-		return ErrNoEnvoyPath
+	m := &istioMonitor{
+		envoyCmd:       c.EnvoyPath,
+		attacher:       nil,
+		processMonitor: monitor.GetProcessMonitor(),
 	}
 
-	return m.registry.Register(
-		path,
-		pid,
-		m.registerCB,
-		m.unregisterCB,
-	)
+	attachCfg := uprobes.AttacherConfig{
+		ProcRoot: c.ProcRoot,
+		Rules: []*uprobes.AttachRule{{
+			Targets:          uprobes.AttachToExecutable,
+			ProbesSelector:   istioProbes,
+			ExecutableFilter: m.isIstioBinary,
+		}},
+		EbpfConfig:                     &c.Config,
+		ExcludeTargets:                 uprobes.ExcludeSelf | uprobes.ExcludeInternal | uprobes.ExcludeBuildkit | uprobes.ExcludeContainerdTmp,
+		EnablePeriodicScanNewProcesses: true,
+	}
+	attacher, err := uprobes.NewUprobeAttacher(consts.USMModuleName, istioAttacherName, attachCfg, mgr, nil, &uprobes.NativeBinaryInspector{}, m.processMonitor)
+	if err != nil {
+		return nil, fmt.Errorf("Cannot create uprobe attacher: %w", err)
+	}
+
+	m.attacher = attacher
+
+	return m, nil
 }
 
 // Start the istioMonitor
@@ -156,49 +124,16 @@ func (m *istioMonitor) Start() {
 		return
 	}
 
-	processMonitor := monitor.GetProcessMonitor()
+	if m.attacher == nil {
+		log.Error("istio monitoring is enabled but the attacher is nil")
+		return
+	}
 
-	// Subscribe to process events
-	doneExec := processMonitor.SubscribeExec(m.handleProcessExec)
-	doneExit := processMonitor.SubscribeExit(m.handleProcessExit)
+	if err := m.attacher.Start(); err != nil {
+		log.Errorf("Cannot start istio attacher: %s", err)
+	}
 
-	// Attach to existing processes
-	m.sync()
-
-	m.wg.Add(1)
-	go func() {
-		// This ticker is responsible for controlling the rate at which
-		// we scrape the whole procFS again in order to ensure that we
-		// terminate any dangling uprobes and register new processes
-		// missed by the process monitor stream
-		processSync := time.NewTicker(scanTerminatedProcessesInterval)
-
-		defer func() {
-			processSync.Stop()
-			// Execute process monitor callback termination functions
-			doneExec()
-			doneExit()
-			// Stopping the process monitor (if we're the last instance)
-			processMonitor.Stop()
-			// Cleaning up all active hooks
-			m.registry.Clear()
-			// marking we're finished.
-			m.wg.Done()
-		}()
-
-		for {
-			select {
-			case <-m.done:
-				return
-			case <-processSync.C:
-				m.sync()
-				m.registry.Log()
-			}
-		}
-	}()
-
-	utils.AddAttacher("istio", m)
-	log.Info("Istio monitoring enabled")
+	log.Info("istio monitoring enabled")
 }
 
 // Stop the istioMonitor.
@@ -207,89 +142,16 @@ func (m *istioMonitor) Stop() {
 		return
 	}
 
-	close(m.done)
-	m.wg.Wait()
-}
-
-// sync state of istioMonitor with the current state of procFS
-// the purpose of this method is two-fold:
-// 1) register processes for which we missed exec events (targeted mostly at startup)
-// 2) unregister processes for which we missed exit events
-func (m *istioMonitor) sync() {
-	deletionCandidates := m.registry.GetRegisteredProcesses()
-
-	_ = kernel.WithAllProcs(m.procRoot, func(pid int) error {
-		if _, ok := deletionCandidates[uint32(pid)]; ok {
-			// We have previously hooked into this process and it remains active,
-			// so we remove it from the deletionCandidates list, and move on to the next PID
-			delete(deletionCandidates, uint32(pid))
-			return nil
-		}
-
-		// This is a new PID so we attempt to attach SSL probes to it
-		_ = m.AttachPID(uint32(pid))
-		return nil
-	})
-
-	// At this point all entries from deletionCandidates are no longer alive, so
-	// we should detach our SSL probes from them
-	for pid := range deletionCandidates {
-		m.handleProcessExit(pid)
-	}
-}
-
-func (m *istioMonitor) handleProcessExit(pid uint32) {
-	// We avoid filtering PIDs here because it's cheaper to simply do a registry lookup
-	// instead of fetching a process name in order to determine whether it is an
-	// envoy process or not (which at the very minimum involves syscalls)
-	_ = m.DetachPID(pid)
-}
-
-func (m *istioMonitor) handleProcessExec(pid uint32) {
-	_ = m.AttachPID(pid)
-}
-
-// getEnvoyPath returns the executable path of the envoy binary for a given PID.
-// In case the PID doesn't represent an envoy process, an empty string is returned.
-//
-// TODO:
-// refine process detection heuristic so we can remove the number of false
-// positives. A common case that is likely worth optimizing for is filtering
-// out "vanilla" envoy processes, and selecting only envoy processes that are
-// running inside istio containers. Based on a quick inspection I made, it
-// seems that we could also search for "istio" in the cmdline string in addition
-// to "envoy", since the command line arguments look more or less the following:
-//
-// /usr/local/bin/envoy -cetc/istio/proxy/envoy-rev.json ...
-func (m *istioMonitor) getEnvoyPath(pid uint32) string {
-	cmdlinePath := fmt.Sprintf("%s/%d/cmdline", m.procRoot, pid)
-
-	f, err := os.Open(cmdlinePath)
-	if err != nil {
-		// This can happen often in the context of ephemeral processes
-		return ""
-	}
-	defer f.Close()
-
-	// From here on we shouldn't allocate for the common case
-	// (eg., a process is *not* envoy)
-	bufferPtr := readBufferPool.Get()
-	defer func() {
-		readBufferPool.Put(bufferPtr)
-	}()
-
-	buffer := *bufferPtr
-	n, _ := f.Read(buffer)
-	if n == 0 {
-		return ""
+	if m.attacher == nil {
+		log.Error("istio monitoring is enabled but the attacher is nil")
+		return
 	}
 
-	buffer = buffer[:n]
-	i := bytes.Index(buffer, envoyCmd)
-	if i < 0 {
-		return ""
-	}
+	m.attacher.Stop()
+}
 
-	executable := buffer[:i+len(envoyCmd)]
-	return string(executable)
+// isIstioBinary checks whether the given file is an istioBinary, based on the expected envoy
+// command substring (as defined by m.envoyCmd).
+func (m *istioMonitor) isIstioBinary(path string, _ *uprobes.ProcInfo) bool {
+	return strings.Contains(path, m.envoyCmd)
 }

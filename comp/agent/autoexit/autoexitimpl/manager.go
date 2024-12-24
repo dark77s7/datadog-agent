@@ -14,7 +14,7 @@ import (
 
 	"github.com/DataDog/datadog-agent/comp/core/config"
 	log "github.com/DataDog/datadog-agent/comp/core/log/def"
-	"github.com/shirou/gopsutil/v3/process"
+	"github.com/shirou/gopsutil/v4/process"
 )
 
 const (
@@ -69,8 +69,9 @@ func startAutoExit(ctx context.Context, sd exitDetector, log log.Component, tick
 
 	log.Info("Starting auto-exit watcher")
 	lastConditionNotMet := time.Now()
-	ticker := time.NewTicker(tickerPeriod)
 	go func() {
+		ticker := time.NewTicker(tickerPeriod)
+		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():

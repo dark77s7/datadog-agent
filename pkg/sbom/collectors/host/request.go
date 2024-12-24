@@ -3,42 +3,43 @@
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
 // Copyright 2016-present Datadog, Inc.
 
-//go:build trivy || (windows && wmi)
-
 package host
 
 import (
-	"io/fs"
+	"os"
 
-	"github.com/DataDog/datadog-agent/pkg/sbom"
-	"github.com/DataDog/datadog-agent/pkg/sbom/collectors"
+	"github.com/DataDog/datadog-agent/pkg/config/env"
+	"github.com/DataDog/datadog-agent/pkg/sbom/types"
 )
-
-// channelSize defines the result channel size
-// It doesn't need more than 1 because the host collector should
-// not trigger multiple scans at the same time unlike for container-images.
-const channelSize = 1
 
 // scanRequest defines a scan request. This struct should be
 // hashable to be pushed in the work queue for processing.
 type scanRequest struct {
 	Path string
-	FS   fs.FS
 }
 
 // NewScanRequest creates a new scan request
-func NewScanRequest(path string, fs fs.FS) sbom.ScanRequest {
-	return scanRequest{Path: path, FS: fs}
+func NewScanRequest(path string) types.ScanRequest {
+	return scanRequest{Path: path}
+}
+
+// NewHostScanRequest creates a new scan request for the root filesystem
+func NewHostScanRequest() types.ScanRequest {
+	scanPath := "/"
+	if hostRoot := os.Getenv("HOST_ROOT"); env.IsContainerized() && hostRoot != "" {
+		scanPath = hostRoot
+	}
+	return NewScanRequest(scanPath)
 }
 
 // Collector returns the collector name
 func (r scanRequest) Collector() string {
-	return collectors.HostCollector
+	return "host"
 }
 
 // Type returns the scan request type
-func (r scanRequest) Type(sbom.ScanOptions) string {
-	return sbom.ScanFilesystemType
+func (r scanRequest) Type(types.ScanOptions) string {
+	return types.ScanFilesystemType
 }
 
 // ID returns the scan request ID

@@ -531,3 +531,84 @@ func TestBatchUpdate(t *testing.T) {
 		require.True(t, foundElements[i])
 	}
 }
+
+type keyWithPointer struct {
+	Pointer *uint32
+	Value   uint32
+}
+
+func TestIterateWithPointerKey(t *testing.T) {
+	require.NoError(t, rlimit.RemoveMemlock())
+
+	m, err := NewGenericMap[keyWithPointer, uint32](&ebpf.MapSpec{
+		Type:       ebpf.Hash,
+		MaxEntries: 100,
+	})
+	require.NoError(t, err)
+
+	numsToPut := uint32(50)
+	theNumber := uint32(42)
+	expectedNumbers := make([]uint32, numsToPut)
+	for i := uint32(0); i < numsToPut; i++ {
+		require.NoError(t, m.Put(&keyWithPointer{Pointer: &theNumber, Value: i}, &i))
+		expectedNumbers[i] = i
+	}
+
+	var k keyWithPointer
+	var v uint32
+	actualNumbers := make([]uint32, numsToPut)
+
+	// Should automatically revert to the single item iterator, as we cannot use pointers
+	// in batch iterators
+	it := m.IterateWithBatchSize(10)
+	require.NotNil(t, it)
+	for it.Next(&k, &v) {
+		actualNumbers[k.Value] = v
+		require.Equal(t, theNumber, *k.Pointer)
+		require.Equal(t, &theNumber, k.Pointer)
+		require.Equal(t, k.Value, v)
+	}
+
+	require.NoError(t, it.Err())
+	require.Equal(t, expectedNumbers, actualNumbers)
+}
+
+func TestValidateMapKeyValueSize(t *testing.T) {
+	m, err := ebpf.NewMap(&ebpf.MapSpec{
+		Type:       ebpf.Hash,
+		MaxEntries: 1,
+		KeySize:    8,
+		ValueSize:  8,
+	})
+
+	require.NoError(t, err, "could not create map")
+	t.Cleanup(func() { m.Close() })
+
+	gm, err := Map[uint32, uint64](m)
+	assert.Error(t, err)
+	assert.Nil(t, gm)
+
+	gm2, err := Map[uint64, uint32](m)
+	assert.Error(t, err)
+	assert.Nil(t, gm2)
+
+	gm3, err := Map[uint64, uint64](m)
+	assert.NoError(t, err)
+	assert.NotNil(t, gm3)
+}
+
+func TestGenericHashMapCanUseBatchAPI(t *testing.T) {
+	hash, err := ebpf.NewMap(&ebpf.MapSpec{
+		Type:       ebpf.Hash,
+		KeySize:    4,
+		ValueSize:  4,
+		MaxEntries: 10,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { hash.Close() })
+
+	gm, err := Map[int32, int32](hash)
+	require.NoError(t, err)
+
+	require.Equal(t, BatchAPISupported(), gm.CanUseBatchAPI())
+}

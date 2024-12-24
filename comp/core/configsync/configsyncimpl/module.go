@@ -22,22 +22,32 @@ import (
 	log "github.com/DataDog/datadog-agent/comp/core/log/def"
 	apiutil "github.com/DataDog/datadog-agent/pkg/api/util"
 	"github.com/DataDog/datadog-agent/pkg/util/fxutil"
-	"github.com/DataDog/datadog-agent/pkg/util/optional"
 )
 
 type dependencies struct {
 	fx.In
 	Lc fx.Lifecycle
 
-	Config    config.Component
-	Log       log.Component
-	Authtoken authtoken.Component
+	Config     config.Component
+	Log        log.Component
+	Authtoken  authtoken.Component
+	SyncParams Params
 }
 
-// OptionalModule defines the fx options for this component.
-func OptionalModule() fxutil.Module {
+// Module defines the fx options for this component.
+func Module() fxutil.Module {
 	return fxutil.Component(
-		fx.Provide(newOptionalConfigSync),
+		fx.Provide(newComponent),
+		fx.Supply(Params{}),
+	)
+}
+
+// ModuleWithParams defines the fx options for this component, but
+// requires additionally specifying custom Params from the fx App, to be
+// passed to the constructor.
+func ModuleWithParams() fxutil.Module {
+	return fxutil.Component(
+		fx.Provide(newComponent),
 	)
 }
 
@@ -46,22 +56,25 @@ type configSync struct {
 	Log       log.Component
 	Authtoken authtoken.Component
 
-	url    *url.URL
-	client *http.Client
-	ctx    context.Context
+	url       *url.URL
+	client    *http.Client
+	connected bool
+	ctx       context.Context
+	enabled   bool
 }
 
-// newOptionalConfigSync checks if the component was enabled as per the config, and returns an optional.Option
-func newOptionalConfigSync(deps dependencies) optional.Option[configsync.Component] {
+// newComponent checks if the component was enabled as per the config and return a enable/disabled configsync
+func newComponent(deps dependencies) configsync.Component {
 	agentIPCPort := deps.Config.GetInt("agent_ipc.port")
 	configRefreshIntervalSec := deps.Config.GetInt("agent_ipc.config_refresh_interval")
 
 	if agentIPCPort <= 0 || configRefreshIntervalSec <= 0 {
-		return optional.NewNoneOption[configsync.Component]()
+		deps.Log.Infof("configsync disabled (agent_ipc.port: %d | agent_ipc.config_refresh_interval: %d)", agentIPCPort, configRefreshIntervalSec)
+		return configSync{}
 	}
 
-	configSync := newConfigSync(deps, agentIPCPort, configRefreshIntervalSec)
-	return optional.NewOption(configSync)
+	deps.Log.Infof("configsync enabled (agent_ipc '%s:%d' | agent_ipc.config_refresh_interval: %d)", deps.Config.GetString("agent_ipc.host"), agentIPCPort, configRefreshIntervalSec)
+	return newConfigSync(deps, agentIPCPort, configRefreshIntervalSec)
 }
 
 // newConfigSync creates a new configSync component.
@@ -76,7 +89,7 @@ func newConfigSync(deps dependencies, agentIPCPort int, configRefreshIntervalSec
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	client := apiutil.GetClient(false)
+	client := apiutil.GetClientWithTimeout(deps.SyncParams.Timeout, false)
 	configRefreshInterval := time.Duration(configRefreshIntervalSec) * time.Second
 
 	configSync := configSync{
@@ -86,15 +99,29 @@ func newConfigSync(deps dependencies, agentIPCPort int, configRefreshIntervalSec
 		url:       url,
 		client:    client,
 		ctx:       ctx,
+		enabled:   true,
+	}
+
+	if deps.SyncParams.OnInit {
+		if deps.SyncParams.Delay != 0 {
+			select {
+			case <-ctx.Done(): //context cancelled
+				// TODO: this component should return an error
+				cancel()
+				return nil
+			case <-time.After(deps.SyncParams.Delay):
+			}
+		}
+		configSync.updater()
 	}
 
 	// start and stop the routine in fx hooks
 	deps.Lc.Append(fx.Hook{
-		OnStart: func(ctx context.Context) error {
+		OnStart: func(_ context.Context) error {
 			go configSync.runWithInterval(configRefreshInterval)
 			return nil
 		},
-		OnStop: func(ctx context.Context) error {
+		OnStop: func(_ context.Context) error {
 			cancel()
 			return nil
 		},

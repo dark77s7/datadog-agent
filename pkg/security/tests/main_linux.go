@@ -3,7 +3,7 @@
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
 // Copyright 2016-present Datadog, Inc.
 
-//go:build linux && (functionaltests || stresstests)
+//go:build linux && functionaltests
 
 // Package tests holds tests related files
 package tests
@@ -26,6 +26,7 @@ const (
 	fakeGroupPath  = "/tmp/fake_group"
 )
 
+// SkipIfNotAvailable skips the test if not available for this platform
 func SkipIfNotAvailable(t *testing.T) {
 	match := func(list []string) bool {
 		var match bool
@@ -59,6 +60,7 @@ func SkipIfNotAvailable(t *testing.T) {
 			"~TestOpen",
 			"~TestUnlink",
 			"~TestActionKill",
+			"~TestActionHash",
 			"~TestRmdir",
 			"~TestRename",
 			"~TestMkdir",
@@ -100,6 +102,8 @@ func SkipIfNotAvailable(t *testing.T) {
 			"TestChdir/syscall-context",
 			"TestLoginUID/login-uid-open-test",
 			"TestLoginUID/login-uid-exec-test",
+			"TestActionKillExcludeBinary",
+			"~TestActionKillDisarm",
 		}
 
 		if disableSeccomp {
@@ -125,6 +129,20 @@ func SkipIfNotAvailable(t *testing.T) {
 	}
 }
 
+// getPIDCGroup returns the path of the first cgroup found for a PID
+func getPIDCGroup(pid uint32) (string, error) {
+	cgroups, err := utils.GetProcControlGroups(pid, pid)
+	if err != nil {
+		return "", err
+	}
+
+	if len(cgroups) == 0 {
+		return "", fmt.Errorf("failed to find cgroup for pid %d", pid)
+	}
+
+	return cgroups[0].Path, nil
+}
+
 func preTestsHook() {
 	if trace {
 		args := slices.DeleteFunc(os.Args, func(arg string) bool {
@@ -143,12 +161,12 @@ func preTestsHook() {
 			Debug:           true,
 		}
 
-		err := ptracer.Wrap(args, envs, constants.DefaultEBPFLessProbeAddr, opts)
+		retCode, err := ptracer.Wrap(args, envs, constants.DefaultEBPFLessProbeAddr, opts)
 		if err != nil {
 			fmt.Printf("unable to trace [%v]: %s", args, err)
 			os.Exit(-1)
 		}
-		os.Exit(0)
+		os.Exit(retCode)
 	}
 }
 

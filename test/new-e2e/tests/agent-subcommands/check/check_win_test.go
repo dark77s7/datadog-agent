@@ -14,7 +14,7 @@ import (
 	"github.com/DataDog/test-infra-definitions/scenarios/aws/ec2"
 
 	"github.com/DataDog/datadog-agent/test/new-e2e/pkg/e2e"
-	awshost "github.com/DataDog/datadog-agent/test/new-e2e/pkg/environments/aws/host"
+	awshost "github.com/DataDog/datadog-agent/test/new-e2e/pkg/provisioners/aws/host"
 )
 
 type windowsCheckSuite struct {
@@ -22,7 +22,6 @@ type windowsCheckSuite struct {
 }
 
 func TestWindowsCheckSuite(t *testing.T) {
-	t.Skip("not working because of the following error: unable to import module 'hello': source code string cannot contain null bytes")
 	t.Parallel()
 	e2e.Run(t, &windowsCheckSuite{}, e2e.WithProvisioner(
 		awshost.ProvisionerNoFakeIntake(
@@ -30,5 +29,7 @@ func TestWindowsCheckSuite(t *testing.T) {
 			awshost.WithAgentOptions(
 				agentparams.WithFile("C:/ProgramData/Datadog/conf.d/hello.d/conf.yaml", string(customCheckYaml), true),
 				agentparams.WithFile("C:/ProgramData/Datadog/checks.d/hello.py", string(customCheckPython), true),
-			))))
+			),
+		),
+	))
 }

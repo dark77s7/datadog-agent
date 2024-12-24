@@ -6,19 +6,22 @@
 package checks
 
 import (
-	"context"
 	"errors"
 	"fmt"
+	"math"
+	"net/http"
 	"regexp"
 	"strings"
 	"time"
 
 	model "github.com/DataDog/agent-payload/v5/process"
-	"github.com/shirou/gopsutil/v3/cpu"
+	"github.com/shirou/gopsutil/v4/cpu"
 	"go.uber.org/atomic"
 
+	"github.com/DataDog/datadog-agent/cmd/system-probe/api/client"
 	workloadmetacomp "github.com/DataDog/datadog-agent/comp/core/workloadmeta/def"
-	ddconfig "github.com/DataDog/datadog-agent/pkg/config"
+	pkgconfigmodel "github.com/DataDog/datadog-agent/pkg/config/model"
+	pkgconfigsetup "github.com/DataDog/datadog-agent/pkg/config/setup"
 	"github.com/DataDog/datadog-agent/pkg/process/metadata"
 	"github.com/DataDog/datadog-agent/pkg/process/metadata/parser"
 	"github.com/DataDog/datadog-agent/pkg/process/metadata/workloadmeta"
@@ -27,7 +30,6 @@ import (
 	"github.com/DataDog/datadog-agent/pkg/process/statsd"
 	"github.com/DataDog/datadog-agent/pkg/process/util"
 	proccontainers "github.com/DataDog/datadog-agent/pkg/process/util/containers"
-	"github.com/DataDog/datadog-agent/pkg/util/cloudproviders"
 	"github.com/DataDog/datadog-agent/pkg/util/flavor"
 	"github.com/DataDog/datadog-agent/pkg/util/log"
 	"github.com/DataDog/datadog-agent/pkg/util/subscriptions"
@@ -44,7 +46,7 @@ const (
 )
 
 // NewProcessCheck returns an instance of the ProcessCheck.
-func NewProcessCheck(config ddconfig.Reader, sysprobeYamlConfig ddconfig.Reader, wmeta workloadmetacomp.Component) *ProcessCheck {
+func NewProcessCheck(config pkgconfigmodel.Reader, sysprobeYamlConfig pkgconfigmodel.Reader, wmeta workloadmetacomp.Component) *ProcessCheck {
 	serviceExtractorEnabled := true
 	useWindowsServiceName := sysprobeYamlConfig.GetBool("system_probe_config.process_service_inference.use_windows_service_name")
 	useImprovedAlgorithm := sysprobeYamlConfig.GetBool("system_probe_config.process_service_inference.use_improved_algorithm")
@@ -70,7 +72,7 @@ const (
 // for live and running processes. The instance will store some state between
 // checks that will be used for rates, cpu calculations, etc.
 type ProcessCheck struct {
-	config ddconfig.Reader
+	config pkgconfigmodel.Reader
 
 	probe procutil.Probe
 	// scrubber is a DataScrubber to hide command line sensitive words
@@ -123,6 +125,8 @@ type ProcessCheck struct {
 	serviceExtractor *parser.ServiceExtractor
 
 	wmeta workloadmetacomp.Component
+
+	sysprobeClient *http.Client
 }
 
 // Init initializes the singleton ProcessCheck.
@@ -132,11 +136,19 @@ func (p *ProcessCheck) Init(syscfg *SysProbeConfig, info *HostInfo, oneShot bool
 	p.probe = newProcessProbe(p.config,
 		procutil.WithPermission(syscfg.ProcessModuleEnabled),
 		procutil.WithIgnoreZombieProcesses(p.config.GetBool(configIgnoreZombies)))
-	p.containerProvider = proccontainers.GetSharedContainerProvider(p.wmeta)
+	sharedContainerProvider, err := proccontainers.GetSharedContainerProvider()
+	if err != nil {
+		return err
+	}
+	p.containerProvider = sharedContainerProvider
 
 	p.notInitializedLogLimit = log.NewLogLimit(1, time.Minute*10)
 
-	networkID, err := cloudproviders.GetNetworkID(context.TODO())
+	if syscfg.NetworkTracerModuleEnabled || syscfg.ProcessModuleEnabled {
+		p.sysprobeClient = client.Get(syscfg.SystemProbeAddress)
+	}
+
+	networkID, err := retryGetNetworkID(p.sysprobeClient)
 	if err != nil {
 		log.Infof("no network ID detected: %s", err)
 	}
@@ -148,8 +160,8 @@ func (p *ProcessCheck) Init(syscfg *SysProbeConfig, info *HostInfo, oneShot bool
 	p.skipAmount = uint32(p.config.GetInt32("process_config.process_discovery.hint_frequency"))
 	if p.skipAmount == 0 {
 		log.Warnf("process_config.process_discovery.hint_frequency must be greater than 0. using default value %d",
-			ddconfig.DefaultProcessDiscoveryHintFrequency)
-		p.skipAmount = ddconfig.DefaultProcessDiscoveryHintFrequency
+			pkgconfigsetup.DefaultProcessDiscoveryHintFrequency)
+		p.skipAmount = pkgconfigsetup.DefaultProcessDiscoveryHintFrequency
 	}
 
 	initScrubber(p.config, p.scrubber)
@@ -163,14 +175,18 @@ func (p *ProcessCheck) Init(syscfg *SysProbeConfig, info *HostInfo, oneShot bool
 	p.extractors = append(p.extractors, p.serviceExtractor)
 
 	if !oneShot && workloadmeta.Enabled(p.config) {
-		p.workloadMetaExtractor = workloadmeta.NewWorkloadMetaExtractor(ddconfig.SystemProbe)
-		p.workloadMetaServer = workloadmeta.NewGRPCServer(p.config, p.workloadMetaExtractor)
-		err = p.workloadMetaServer.Start()
-		if err != nil {
-			return log.Error("Failed to start the workloadmeta process entity gRPC server:", err)
-		} else { //nolint:revive // TODO(PROC) Fix revive linter
-			p.extractors = append(p.extractors, p.workloadMetaExtractor)
+		p.workloadMetaExtractor = workloadmeta.GetSharedWorkloadMetaExtractor(pkgconfigsetup.SystemProbe())
+
+		// The server is only needed on the process agent
+		if !p.config.GetBool("process_config.run_in_core_agent.enabled") && flavor.GetFlavor() == flavor.ProcessAgent {
+			p.workloadMetaServer = workloadmeta.NewGRPCServer(p.config, p.workloadMetaExtractor)
+			err = p.workloadMetaServer.Start()
+			if err != nil {
+				return log.Error("Failed to start the workloadmeta process entity gRPC server:", err)
+			}
 		}
+
+		p.extractors = append(p.extractors, p.workloadMetaExtractor)
 	}
 	return nil
 }
@@ -253,8 +269,13 @@ func (p *ProcessCheck) run(groupID int32, collectRealTime bool) (RunResult, erro
 		p.lastPIDs = append(p.lastPIDs, pid)
 	}
 
-	if sysProbeUtil := p.getRemoteSysProbeUtil(); sysProbeUtil != nil {
-		mergeProcWithSysprobeStats(p.lastPIDs, procs, sysProbeUtil)
+	if p.sysprobeClient != nil && p.sysProbeConfig.ProcessModuleEnabled {
+		pStats, err := net.GetProcStats(p.sysprobeClient, p.lastPIDs)
+		if err == nil {
+			mergeProcWithSysprobeStats(procs, pStats)
+		} else {
+			log.Debugf("cannot do GetProcStats from system-probe for process check: %s", err)
+		}
 	}
 
 	var containers []*model.Container
@@ -371,6 +392,19 @@ func procsToStats(procs map[int32]*procutil.Process) map[int32]*procutil.Stats {
 func (p *ProcessCheck) Run(nextGroupID func() int32, options *RunOptions) (RunResult, error) {
 	if options == nil {
 		return p.run(nextGroupID(), false)
+	}
+
+	// For no chunking, set max batch size to max value to ensure one chunk
+	if options.NoChunking {
+		oldMaxBatchSize := p.maxBatchSize
+		oldMaxBatchBytes := p.maxBatchBytes
+		p.maxBatchSize = math.MaxInt
+		p.maxBatchBytes = math.MaxInt
+
+		defer func() {
+			p.maxBatchSize = oldMaxBatchSize
+			p.maxBatchBytes = oldMaxBatchBytes
+		}()
 	}
 
 	if options.RunStandard {
@@ -630,40 +664,20 @@ func skipProcess(
 	return false
 }
 
-func (p *ProcessCheck) getRemoteSysProbeUtil() *net.RemoteSysProbeUtil {
-	if !p.sysProbeConfig.ProcessModuleEnabled {
-		return nil
-	}
-
-	pu, err := net.GetRemoteSystemProbeUtil(p.sysProbeConfig.SystemProbeAddress)
-	if err != nil {
-		if p.notInitializedLogLimit.ShouldLog() {
-			log.Warnf("could not initialize system-probe connection in process check: %v (will only log every 10 minutes)", err)
-		}
-		return nil
-	}
-	return pu
-}
-
 // mergeProcWithSysprobeStats takes a process by PID map and fill the stats from system probe into the processes in the map
-func mergeProcWithSysprobeStats(pids []int32, procs map[int32]*procutil.Process, pu net.SysProbeUtil) {
-	pStats, err := pu.GetProcStats(pids)
-	if err == nil {
-		for pid, proc := range procs {
-			if s, ok := pStats.StatsByPID[pid]; ok {
-				proc.Stats.OpenFdCount = s.OpenFDCount
-				proc.Stats.IOStat.ReadCount = s.ReadCount
-				proc.Stats.IOStat.WriteCount = s.WriteCount
-				proc.Stats.IOStat.ReadBytes = s.ReadBytes
-				proc.Stats.IOStat.WriteBytes = s.WriteBytes
-			}
+func mergeProcWithSysprobeStats(procs map[int32]*procutil.Process, pStats *model.ProcStatsWithPermByPID) {
+	for pid, proc := range procs {
+		if s, ok := pStats.StatsByPID[pid]; ok {
+			proc.Stats.OpenFdCount = s.OpenFDCount
+			proc.Stats.IOStat.ReadCount = s.ReadCount
+			proc.Stats.IOStat.WriteCount = s.WriteCount
+			proc.Stats.IOStat.ReadBytes = s.ReadBytes
+			proc.Stats.IOStat.WriteBytes = s.WriteBytes
 		}
-	} else {
-		log.Debugf("cannot do GetProcStats from system-probe for process check: %s", err)
 	}
 }
 
-func initScrubber(config ddconfig.Reader, scrubber *procutil.DataScrubber) {
+func initScrubber(config pkgconfigmodel.Reader, scrubber *procutil.DataScrubber) {
 	// Enable/Disable the DataScrubber to obfuscate process args
 	if config.IsSet(configScrubArgs) {
 		scrubber.Enabled = config.GetBool(configScrubArgs)
@@ -687,7 +701,7 @@ func initScrubber(config ddconfig.Reader, scrubber *procutil.DataScrubber) {
 	}
 }
 
-func initDisallowList(config ddconfig.Reader) []*regexp.Regexp {
+func initDisallowList(config pkgconfigmodel.Reader) []*regexp.Regexp {
 	var disallowList []*regexp.Regexp
 	// A list of regex patterns that will exclude a process if matched.
 	if config.IsSet(configDisallowList) {

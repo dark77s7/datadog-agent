@@ -5,13 +5,17 @@
 
 //go:build unix
 
-//go:generate go run github.com/DataDog/datadog-agent/pkg/security/secl/compiler/generators/accessors -tags unix -types-file model.go -output accessors_unix.go -field-handlers field_handlers_unix.go -doc ../../../../docs/cloud-workload-security/secl_linux.json -field-accessors-output field_accessors_unix.go -verbose
+//go:generate go run github.com/DataDog/datadog-agent/pkg/security/secl/compiler/generators/accessors -tags unix -types-file model.go -output accessors_unix.go -field-handlers field_handlers_unix.go -doc ../../../../docs/cloud-workload-security/secl_linux.json -field-accessors-output field_accessors_unix.go
 
 // Package model holds model related files
 package model
 
 import (
 	"time"
+
+	"modernc.org/mathutil"
+
+	"github.com/google/gopacket"
 
 	"github.com/DataDog/datadog-agent/pkg/security/secl/compiler/eval"
 	"github.com/DataDog/datadog-agent/pkg/security/secl/containerutils"
@@ -23,12 +27,12 @@ type Event struct {
 	BaseEvent
 
 	// globals
-	Async bool `field:"event.async,handler:ResolveAsync" event:"*"` // SECLDoc[event.async] Definition:`True if the syscall was asynchronous`
+	Async bool `field:"event.async,handler:ResolveAsync"` // SECLDoc[event.async] Definition:`True if the syscall was asynchronous`
 
 	// context
 	SpanContext    SpanContext    `field:"-"`
-	NetworkContext NetworkContext `field:"network"` // [7.36] [Network] Network context
-	CGroupContext  CGroupContext  `field:"cgroup" event:"*"`
+	NetworkContext NetworkContext `field:"network" restricted_to:"dns,imds"` // [7.36] [Network] Network context
+	CGroupContext  CGroupContext  `field:"cgroup"`
 
 	// fim events
 	Chmod       ChmodEvent    `field:"chmod" event:"chmod"`             // [7.27] [File] A file’s permissions were changed
@@ -56,6 +60,10 @@ type Event struct {
 	Syscalls      SyscallsEvent      `field:"-"`
 	LoginUIDWrite LoginUIDWriteEvent `field:"-"`
 
+	// network syscalls
+	Bind    BindEvent    `field:"bind" event:"bind"`       // [7.37] [Network] A bind was executed
+	Connect ConnectEvent `field:"connect" event:"connect"` // [7.60] [Network] A connect was executed
+
 	// kernel events
 	SELinux      SELinuxEvent      `field:"selinux" event:"selinux"`             // [7.30] [Kernel] An SELinux operation was run
 	BPF          BPFEvent          `field:"bpf" event:"bpf"`                     // [7.33] [Kernel] A BPF command was executed
@@ -66,9 +74,9 @@ type Event struct {
 	UnloadModule UnloadModuleEvent `field:"unload_module" event:"unload_module"` // [7.35] [Kernel] A kernel module was deleted
 
 	// network events
-	DNS  DNSEvent  `field:"dns" event:"dns"`   // [7.36] [Network] A DNS request was sent
-	IMDS IMDSEvent `field:"imds" event:"imds"` // [7.55] [Network] An IMDS event was captured
-	Bind BindEvent `field:"bind" event:"bind"` // [7.37] [Network] A bind was executed
+	DNS       DNSEvent       `field:"dns" event:"dns"`       // [7.36] [Network] A DNS request was sent
+	IMDS      IMDSEvent      `field:"imds" event:"imds"`     // [7.55] [Network] An IMDS event was captured
+	RawPacket RawPacketEvent `field:"packet" event:"packet"` // [7.60] [Network] A raw network packet captured
 
 	// on-demand events
 	OnDemand OnDemandEvent `field:"ondemand" event:"ondemand"`
@@ -79,17 +87,35 @@ type Event struct {
 	ArgsEnvs         ArgsEnvsEvent         `field:"-"`
 	MountReleased    MountReleasedEvent    `field:"-"`
 	CgroupTracing    CgroupTracingEvent    `field:"-"`
+	CgroupWrite      CgroupWriteEvent      `field:"-"`
 	NetDevice        NetDeviceEvent        `field:"-"`
 	VethPair         VethPairEvent         `field:"-"`
 	UnshareMountNS   UnshareMountNSEvent   `field:"-"`
-	// used for ebpfless
-	NSID uint64 `field:"-"`
 }
 
 // CGroupContext holds the cgroup context of an event
 type CGroupContext struct {
-	CGroupID    containerutils.CGroupID    `field:"id,handler:ResolveCGroupID"` // SECLDoc[id] Definition:`ID of the cgroup`
-	CGroupFlags containerutils.CGroupFlags `field:"-"`
+	CGroupID      containerutils.CGroupID    `field:"id,handler:ResolveCGroupID"` // SECLDoc[id] Definition:`ID of the cgroup`
+	CGroupFlags   containerutils.CGroupFlags `field:"-"`
+	CGroupManager string                     `field:"manager,handler:ResolveCGroupManager"` // SECLDoc[manager] Definition:`Lifecycle manager of the cgroup`
+	CGroupFile    PathKey                    `field:"file"`
+	CGroupVersion int                        `field:"version,handler:ResolveCGroupVersion"` // SECLDoc[version] Definition:`Version of the cgroup API`
+}
+
+// Merge two cgroup context
+func (cg *CGroupContext) Merge(cg2 *CGroupContext) {
+	if cg.CGroupID == "" {
+		cg.CGroupID = cg2.CGroupID
+	}
+	if cg.CGroupFlags == 0 {
+		cg.CGroupFlags = cg2.CGroupFlags
+	}
+	if cg.CGroupFile.Inode == 0 {
+		cg.CGroupFile.Inode = cg2.CGroupFile.Inode
+	}
+	if cg.CGroupFile.MountID == 0 {
+		cg.CGroupFile.MountID = cg2.CGroupFile.MountID
+	}
 }
 
 // SyscallEvent contains common fields for all the event
@@ -203,8 +229,8 @@ type Process struct {
 	CGroup      CGroupContext              `field:"cgroup"`                                         // SECLDoc[cgroup] Definition:`CGroup`
 	ContainerID containerutils.ContainerID `field:"container.id,handler:ResolveProcessContainerID"` // SECLDoc[container.id] Definition:`Container ID`
 
-	SpanID  uint64 `field:"-"`
-	TraceID uint64 `field:"-"`
+	SpanID  uint64          `field:"-"`
+	TraceID mathutil.Int128 `field:"-"`
 
 	TTYName     string      `field:"tty_name"`                         // SECLDoc[tty_name] Definition:`Name of the TTY associated with the process`
 	Comm        string      `field:"comm"`                             // SECLDoc[comm] Definition:`Comm attribute of the process`
@@ -236,7 +262,7 @@ type Process struct {
 
 	// defined to generate accessors, ArgsTruncated and EnvsTruncated are used during by unmarshaller
 	Argv0         string   `field:"argv0,handler:ResolveProcessArgv0,weight:100"`                                                                                                                                                                            // SECLDoc[argv0] Definition:`First argument of the process`
-	Args          string   `field:"args,handler:ResolveProcessArgs,weight:500"`                                                                                                                                                                              // SECLDoc[args] Definition:`Arguments of the process (as a string, excluding argv0)` Example:`exec.args == "-sV -p 22,53,110,143,4564 198.116.0-255.1-127"` Description:`Matches any process with these exact arguments.` Example:`exec.args =~ "* -F * http*"` Description:`Matches any process that has the "-F" argument anywhere before an argument starting with "http".`
+	Args          string   `field:"args,handler:ResolveProcessArgs,weight:500,opts:skip_ad"`                                                                                                                                                                 // SECLDoc[args] Definition:`Arguments of the process (as a string, excluding argv0)` Example:`exec.args == "-sV -p 22,53,110,143,4564 198.116.0-255.1-127"` Description:`Matches any process with these exact arguments.` Example:`exec.args =~ "* -F * http*"` Description:`Matches any process that has the "-F" argument anywhere before an argument starting with "http".`
 	Argv          []string `field:"argv,handler:ResolveProcessArgv,weight:500; cmdargv,handler:ResolveProcessCmdArgv,opts:getters_only; args_flags,handler:ResolveProcessArgsFlags,opts:helper; args_options,handler:ResolveProcessArgsOptions,opts:helper"` // SECLDoc[argv] Definition:`Arguments of the process (as an array, excluding argv0)` Example:`exec.argv in ["127.0.0.1"]` Description:`Matches any process that has this IP address as one of its arguments.` SECLDoc[args_flags] Definition:`Flags in the process arguments` Example:`exec.args_flags in ["s"] && exec.args_flags in ["V"]` Description:`Matches any process with both "-s" and "-V" flags in its arguments. Also matches "-sV".` SECLDoc[args_options] Definition:`Argument of the process as options` Example:`exec.args_options in ["p=0-1024"]` Description:`Matches any process that has either "-p 0-1024" or "--p=0-1024" in its arguments.`
 	ArgsTruncated bool     `field:"args_truncated,handler:ResolveProcessArgsTruncated"`                                                                                                                                                                      // SECLDoc[args_truncated] Definition:`Indicator of arguments truncation`
 	Envs          []string `field:"envs,handler:ResolveProcessEnvs,weight:100"`                                                                                                                                                                              // SECLDoc[envs] Definition:`Environment variable names of the process`
@@ -254,9 +280,11 @@ type Process struct {
 	ScrubbedArgvResolved bool           `field:"-"`
 	Variables            eval.Variables `field:"-"`
 
-	IsThread        bool `field:"is_thread"` // SECLDoc[is_thread] Definition:`Indicates whether the process is considered a thread (that is, a child process that hasn't executed another program)`
-	IsExecExec      bool `field:"-"`         // Indicates whether the process is an exec following another exec
-	IsParentMissing bool `field:"-"`         // Indicates the direct parent is missing
+	// IsThread is the negation of IsExec and should be manipulated directly
+	IsThread        bool `field:"is_thread,handler:ResolveProcessIsThread"` // SECLDoc[is_thread] Definition:`Indicates whether the process is considered a thread (that is, a child process that hasn't executed another program)`
+	IsExec          bool `field:"is_exec"`                                  // SECLDoc[is_exec] Definition:`Indicates whether the process entry is from a new binary execution`
+	IsExecExec      bool `field:"-"`                                        // Indicates whether the process is an exec following another exec
+	IsParentMissing bool `field:"-"`                                        // Indicates the direct parent is missing
 
 	Source uint64 `field:"-"`
 
@@ -432,6 +460,8 @@ type PIDContext struct {
 	NetNS     uint32 `field:"-"`
 	IsKworker bool   `field:"is_kworker"` // SECLDoc[is_kworker] Definition:`Indicates whether the process is a kworker`
 	ExecInode uint64 `field:"-"`          // used to track exec and event loss
+	// used for ebpfless
+	NSID uint64 `field:"-"`
 }
 
 // RenameEvent represents a rename event
@@ -525,6 +555,7 @@ type PTraceEvent struct {
 
 	Request uint32          `field:"request"` // SECLDoc[request] Definition:`ptrace request` Constants:`Ptrace constants`
 	PID     uint32          `field:"-"`
+	NSPID   uint32          `field:"-"`
 	Address uint64          `field:"-"`
 	Tracee  *ProcessContext `field:"tracee"` // process context of the tracee
 }
@@ -590,10 +621,17 @@ type SpliceEvent struct {
 
 // CgroupTracingEvent is used to signal that a new cgroup should be traced by the activity dump manager
 type CgroupTracingEvent struct {
-	CGroupFlags      uint64
 	ContainerContext ContainerContext
+	CGroupContext    CGroupContext
 	Config           ActivityDumpLoadConfig
 	ConfigCookie     uint64
+}
+
+// CgroupWriteEvent is used to signal that a new cgroup was created
+type CgroupWriteEvent struct {
+	File        FileEvent `field:"file"` // Path to the cgroup
+	Pid         uint32    `field:"-"`    // PID of the process added to the cgroup
+	CGroupFlags uint32    `field:"-"`    // CGroup flags
 }
 
 // ActivityDumpLoadConfig represents the load configuration of an activity dump
@@ -610,7 +648,7 @@ type ActivityDumpLoadConfig struct {
 // NetworkDeviceContext represents the network device context of a network event
 type NetworkDeviceContext struct {
 	NetNS   uint32 `field:"-"`
-	IfIndex uint32 `field:"ifindex"`                                   // SECLDoc[ifindex] Definition:`Interface ifindex`
+	IfIndex uint32 `field:"-"`
 	IfName  string `field:"ifname,handler:ResolveNetworkDeviceIfName"` // SECLDoc[ifname] Definition:`Interface ifname`
 }
 
@@ -620,6 +658,16 @@ type BindEvent struct {
 
 	Addr       IPPortContext `field:"addr"`        // Bound address
 	AddrFamily uint16        `field:"addr.family"` // SECLDoc[addr.family] Definition:`Address family`
+	Protocol   uint16        `field:"protocol"`    // SECLDoc[protocol] Definition:`Socket Protocol`
+}
+
+// ConnectEvent represents a connect event
+type ConnectEvent struct {
+	SyscallEvent
+
+	Addr       IPPortContext `field:"addr"`        // Connection address
+	AddrFamily uint16        `field:"addr.family"` // SECLDoc[addr.family] Definition:`Address family`
+	Protocol   uint16        `field:"protocol"`    // SECLDoc[protocol] Definition:`Socket Protocol`
 }
 
 // NetDevice represents a network device
@@ -677,4 +725,13 @@ type OnDemandEvent struct {
 // LoginUIDWriteEvent is used to propagate login UID updates to user space
 type LoginUIDWriteEvent struct {
 	AUID uint32 `field:"-"`
+}
+
+// RawPacketEvent represents a packet event
+type RawPacketEvent struct {
+	NetworkContext
+	TLSContext  TLSContext           `field:"tls"`                                       // SECLDoc[tls] Definition:`TLS context`
+	Filter      string               `field:"filter" op_override:"PacketFilterMatching"` // SECLDoc[filter] Definition:`pcap filter expression`
+	CaptureInfo gopacket.CaptureInfo `field:"-"`
+	Data        []byte               `field:"-"`
 }

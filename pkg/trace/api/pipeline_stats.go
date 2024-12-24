@@ -61,7 +61,7 @@ func (r *HTTPReceiver) pipelineStatsProxyHandler() http.Handler {
 }
 
 func pipelineStatsErrorHandler(err error) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		msg := fmt.Sprintf("Pipeline stats forwarder is OFF: %v", err)
 		http.Error(w, msg, http.StatusInternalServerError)
 	})
@@ -71,7 +71,7 @@ func pipelineStatsErrorHandler(err error) http.Handler {
 // The tags will be added as a header to all proxied requests.
 func newPipelineStatsProxy(conf *config.AgentConfig, urls []*url.URL, apiKeys []string, tags string, statsd statsd.ClientInterface) *httputil.ReverseProxy {
 	log.Debug("[pipeline_stats] Creating reverse proxy")
-	cidProvider := NewIDProvider(conf.ContainerProcRoot)
+	cidProvider := NewIDProvider(conf.ContainerProcRoot, conf.ContainerIDFromOriginInfo)
 	director := func(req *http.Request) {
 		req.Header.Set("Via", fmt.Sprintf("trace-agent %s", conf.AgentVersion))
 		if _, ok := req.Header["User-Agent"]; !ok {
@@ -82,8 +82,9 @@ func newPipelineStatsProxy(conf *config.AgentConfig, urls []*url.URL, apiKeys []
 		}
 		containerID := cidProvider.GetContainerID(req.Context(), req.Header)
 		if ctags := getContainerTags(conf.ContainerTags, containerID); ctags != "" {
-			req.Header.Set("X-Datadog-Container-Tags", ctags)
-			log.Debugf("Setting header X-Datadog-Container-Tags=%s for pipeline stats proxy", ctags)
+			ctagsHeader := normalizeHTTPHeader(ctags)
+			req.Header.Set("X-Datadog-Container-Tags", ctagsHeader)
+			log.Debugf("Setting header X-Datadog-Container-Tags=%s for pipeline stats proxy", ctagsHeader)
 		}
 		req.Header.Set("X-Datadog-Additional-Tags", tags)
 		log.Debugf("Setting header X-Datadog-Additional-Tags=%s for pipeline stats proxy", tags)

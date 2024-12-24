@@ -10,10 +10,10 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/moby/sys/mountinfo"
 	"golang.org/x/sys/unix"
 
-	log "github.com/cihub/seelog"
-	"github.com/moby/sys/mountinfo"
+	"github.com/DataDog/datadog-agent/pkg/util/log"
 )
 
 type fsInfoGetter func(*mountinfo.Info) (uint64, error)
@@ -74,9 +74,7 @@ func replaceDev(oldMount, newMount MountInfo) bool {
 }
 
 // getFileSystemInfoWithMounts is an internal method to help testing with test mounts and mocking syscalls
-func getFileSystemInfoWithMounts(initialMounts []*mountinfo.Info, sizeKB, dev fsInfoGetter) ([]MountInfo, error) {
-	mounts := initialMounts
-
+func getFileSystemInfoWithMounts(mounts []*mountinfo.Info, sizeKB, dev fsInfoGetter) ([]MountInfo, error) {
 	devMountInfos := map[uint64]MountInfo{}
 	for _, mount := range mounts {
 		// Skip mounts that seem to be missing data

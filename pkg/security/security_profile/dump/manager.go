@@ -25,7 +25,7 @@ import (
 	"github.com/DataDog/datadog-go/v5/statsd"
 	manager "github.com/DataDog/ebpf-manager"
 
-	coreconfig "github.com/DataDog/datadog-agent/pkg/config"
+	pkgconfigsetup "github.com/DataDog/datadog-agent/pkg/config/setup"
 	configUtils "github.com/DataDog/datadog-agent/pkg/config/utils"
 	"github.com/DataDog/datadog-agent/pkg/security/config"
 	"github.com/DataDog/datadog-agent/pkg/security/ebpf/kernel"
@@ -34,6 +34,8 @@ import (
 	"github.com/DataDog/datadog-agent/pkg/security/proto/api"
 	"github.com/DataDog/datadog-agent/pkg/security/resolvers"
 	cgroupModel "github.com/DataDog/datadog-agent/pkg/security/resolvers/cgroup/model"
+	"github.com/DataDog/datadog-agent/pkg/security/resolvers/tags"
+	"github.com/DataDog/datadog-agent/pkg/security/secl/containerutils"
 	"github.com/DataDog/datadog-agent/pkg/security/secl/model"
 	"github.com/DataDog/datadog-agent/pkg/security/seclog"
 	activity_tree "github.com/DataDog/datadog-agent/pkg/security/security_profile/activity_tree"
@@ -47,7 +49,7 @@ type ActivityDumpHandler interface {
 
 // SecurityProfileManager is a generic interface used to communicate with the Security Profile manager
 type SecurityProfileManager interface {
-	FetchSilentWorkloads() map[cgroupModel.WorkloadSelector][]*cgroupModel.CacheEntry
+	FetchSilentWorkloads() map[cgroupModel.WorkloadSelector][]*tags.Workload
 	OnLocalStorageCleanup(files []string)
 }
 
@@ -69,7 +71,7 @@ type ActivityDumpManager struct {
 	tracedCgroupsMap       *ebpf.Map
 	cgroupWaitList         *ebpf.Map
 	activityDumpsConfigMap *ebpf.Map
-	ignoreFromSnapshot     map[string]bool
+	ignoreFromSnapshot     map[model.PathKey]bool
 
 	dumpLimiter          *lru.Cache[cgroupModel.WorkloadSelector, *atomic.Uint64]
 	workloadDenyList     []cgroupModel.WorkloadSelector
@@ -143,60 +145,39 @@ func (adm *ActivityDumpManager) cleanup() {
 		} else {
 			adm.emptyDropped.Inc()
 		}
-
-		// remove from the map of ignored dumps
-		adm.Lock()
-		delete(adm.ignoreFromSnapshot, ad.Metadata.ContainerID)
-		adm.Unlock()
 	}
-
-	adm.RemoveStoppedActivityDumps()
 
 	// cleanup cgroup_wait_list map
 	iterator := adm.cgroupWaitList.Iterate()
-	containerIDB := make([]byte, model.ContainerIDLen)
+	cgroupFile := make([]byte, model.PathKeySize)
 	var timestamp uint64
 
-	for iterator.Next(&containerIDB, &timestamp) {
+	for iterator.Next(&cgroupFile, &timestamp) {
 		if time.Now().After(adm.resolvers.TimeResolver.ResolveMonotonicTimestamp(timestamp)) {
-			if err := adm.cgroupWaitList.Delete(&containerIDB); err != nil {
-				seclog.Errorf("couldn't delete cgroup_wait_list entry for (%s): %v", string(containerIDB), err)
+			if err := adm.cgroupWaitList.Delete(&cgroupFile); err != nil {
+				seclog.Errorf("couldn't delete cgroup_wait_list entry for (%v): %v", cgroupFile, err)
 			}
 		}
 	}
 }
 
-// RemoveStoppedActivityDumps removes all stopped activity dumps from the active list
-func (adm *ActivityDumpManager) RemoveStoppedActivityDumps() {
-	adm.Lock()
-	defer adm.Unlock()
-
-	newActiveDumps := make([]*ActivityDump, 0, len(adm.activeDumps))
-	for _, ad := range adm.activeDumps {
-		ad.Lock()
-		state := ad.state
-		ad.Unlock()
-
-		if state != Stopped {
-			newActiveDumps = append(newActiveDumps, ad)
-		}
-	}
-	adm.activeDumps = newActiveDumps
-}
-
-// getExpiredDumps returns the list of dumps that have timed out
+// getExpiredDumps returns the list of dumps that have timed out and remove them from the active dumps
 func (adm *ActivityDumpManager) getExpiredDumps() []*ActivityDump {
 	adm.Lock()
 	defer adm.Unlock()
 
-	var dumps []*ActivityDump
+	var expiredDumps []*ActivityDump
+	var newDumps []*ActivityDump
 	for _, ad := range adm.activeDumps {
-		if time.Now().After(ad.Metadata.End) {
-			dumps = append(dumps, ad)
-			adm.ignoreFromSnapshot[ad.Metadata.ContainerID] = true
+		if time.Now().After(ad.Metadata.End) || ad.state == Stopped {
+			expiredDumps = append(expiredDumps, ad)
+			delete(adm.ignoreFromSnapshot, ad.Metadata.CGroupContext.CGroupFile)
+		} else {
+			newDumps = append(newDumps, ad)
 		}
 	}
-	return dumps
+	adm.activeDumps = newDumps
+	return expiredDumps
 }
 
 func (adm *ActivityDumpManager) resolveTagsPerAd(ad *ActivityDump) {
@@ -295,7 +276,7 @@ func NewActivityDumpManager(config *config.Config, statsdClient statsd.ClientInt
 		return nil, err
 	}
 
-	limiter, err := lru.NewWithEvict(1024, func(workloadSelector cgroupModel.WorkloadSelector, count *atomic.Uint64) {
+	limiter, err := lru.NewWithEvict(1024, func(_ cgroupModel.WorkloadSelector, _ *atomic.Uint64) {
 	})
 	if err != nil {
 		return nil, fmt.Errorf("couldn't create dump limiter: %w", err)
@@ -324,7 +305,7 @@ func NewActivityDumpManager(config *config.Config, statsdClient statsd.ClientInt
 		cgroupWaitList:         cgroupWaitList,
 		activityDumpsConfigMap: activityDumpsConfigMap,
 		snapshotQueue:          make(chan *ActivityDump, 100),
-		ignoreFromSnapshot:     make(map[string]bool),
+		ignoreFromSnapshot:     make(map[model.PathKey]bool),
 		dumpLimiter:            limiter,
 		workloadDenyList:       denyList,
 		workloadDenyListHits:   atomic.NewUint64(0),
@@ -340,7 +321,8 @@ func NewActivityDumpManager(config *config.Config, statsdClient statsd.ClientInt
 	if err != nil {
 		return nil, fmt.Errorf("couldn't instantiate the activity dump load controller: %w", err)
 	}
-	if err = loadController.PushCurrentConfig(); err != nil {
+
+	if err = loadController.PushDefaultCurrentConfigs(); err != nil {
 		return nil, fmt.Errorf("failed to push load controller config settings to kernel space: %w", err)
 	}
 	adm.loadController = loadController
@@ -359,7 +341,7 @@ func (adm *ActivityDumpManager) prepareContextTags() {
 	adm.contextTags = append(adm.contextTags, fmt.Sprintf("host:%s", adm.hostname))
 
 	// merge tags from config
-	for _, tag := range configUtils.GetConfiguredTags(coreconfig.Datadog(), true) {
+	for _, tag := range configUtils.GetConfiguredTags(pkgconfigsetup.Datadog(), true) {
 		if strings.HasPrefix(tag, "host") {
 			continue
 		}
@@ -380,19 +362,35 @@ func (adm *ActivityDumpManager) insertActivityDump(newDump *ActivityDump) error 
 		for _, ad := range adm.activeDumps {
 			if ad.Metadata.ContainerID == newDump.Metadata.ContainerID {
 				// an activity dump is already active for this container ID, ignore
-				return nil
+				return fmt.Errorf("dump for container %s already running", ad.Metadata.ContainerID)
 			}
 		}
 	}
+
+	if len(newDump.Metadata.CGroupContext.CGroupID) > 0 {
+		// check if the provided container ID is new
+		for _, ad := range adm.activeDumps {
+			if ad.Metadata.CGroupContext.CGroupID == newDump.Metadata.CGroupContext.CGroupID {
+				// an activity dump is already active for this container ID, ignore
+				return fmt.Errorf("dump for cgroup %s already running", ad.Metadata.CGroupContext.CGroupID)
+			}
+		}
+	}
+
+	// loop through the process cache entry tree and push traced pids if necessary
+	pces := adm.newProcessCacheEntrySearcher(newDump)
+	adm.resolvers.ProcessResolver.Walk(func(entry *model.ProcessCacheEntry) {
+		if !pces.ad.MatchesSelector(entry) {
+			return
+		}
+		pces.ad.Metadata.CGroupContext = entry.CGroup
+		pces.SearchTracedProcessCacheEntry(entry)
+	})
 
 	// enable the new dump to start collecting events from kernel space
 	if err := newDump.enable(); err != nil {
 		return fmt.Errorf("couldn't insert new dump: %w", err)
 	}
-
-	// loop through the process cache entry tree and push traced pids if necessary
-	pces := adm.newProcessCacheEntrySearcher(newDump)
-	adm.resolvers.ProcessResolver.Walk(pces.SearchTracedProcessCacheEntry)
 
 	// Delay the activity dump snapshot to reduce the overhead on the main goroutine
 	select {
@@ -411,10 +409,10 @@ func (adm *ActivityDumpManager) insertActivityDump(newDump *ActivityDump) error 
 }
 
 // handleDefaultDumpRequest starts dumping a new workload with the provided load configuration and the default dump configuration
-func (adm *ActivityDumpManager) startDumpWithConfig(containerID string, containerFlags, cookie uint64, loadConfig model.ActivityDumpLoadConfig) error {
+func (adm *ActivityDumpManager) startDumpWithConfig(containerID containerutils.ContainerID, cgroupContext model.CGroupContext, cookie uint64, loadConfig model.ActivityDumpLoadConfig) error {
 	newDump := NewActivityDump(adm, func(ad *ActivityDump) {
 		ad.Metadata.ContainerID = containerID
-		ad.Metadata.ContainerFlags = containerFlags
+		ad.Metadata.CGroupContext = cgroupContext
 		ad.SetLoadConfig(cookie, loadConfig)
 
 		if adm.config.RuntimeSecurity.ActivityDumpCgroupDifferentiateArgs {
@@ -452,12 +450,12 @@ func (adm *ActivityDumpManager) HandleCGroupTracingEvent(event *model.CgroupTrac
 	adm.Lock()
 	defer adm.Unlock()
 
-	if len(event.ContainerContext.ContainerID) == 0 {
-		seclog.Errorf("received a cgroup tracing event with an empty container ID")
+	if len(event.CGroupContext.CGroupID) == 0 {
+		seclog.Warnf("received a cgroup tracing event with an empty cgroup ID")
 		return
 	}
 
-	if err := adm.startDumpWithConfig(string(event.ContainerContext.ContainerID), event.CGroupFlags, event.ConfigCookie, event.Config); err != nil {
+	if err := adm.startDumpWithConfig(event.ContainerContext.ContainerID, event.CGroupContext, event.ConfigCookie, event.Config); err != nil {
 		seclog.Warnf("%v", err)
 	}
 }
@@ -517,7 +515,19 @@ workloadLoop:
 		}
 
 		// if we're still here, we can start tracing this workload
-		if err := adm.startDumpWithConfig(string(workloads[0].ContainerID), uint64(workloads[0].CGroupFlags), utils.NewCookie(), *adm.loadController.getDefaultLoadConfig()); err != nil {
+		defaultConfigs, err := adm.loadController.getDefaultLoadConfigs()
+		if err != nil {
+			seclog.Errorf("%v", err)
+			continue
+		}
+
+		defaultConfig, found := defaultConfigs[containerutils.CGroupManager(workloads[0].CGroupContext.CGroupFlags)]
+		if !found {
+			seclog.Errorf("Failed to find default activity dump config for %s", containerutils.CGroupManager(workloads[0].CGroupContext.CGroupFlags).String())
+			continue
+		}
+
+		if err := adm.startDumpWithConfig(workloads[0].ContainerID, workloads[0].CGroupContext, utils.NewCookie(), *defaultConfig); err != nil {
 			if !errors.Is(err, unix.E2BIG) {
 				seclog.Debugf("%v", err)
 				break
@@ -541,20 +551,75 @@ func (adm *ActivityDumpManager) ListActivityDumps(_ *api.ActivityDumpListParams)
 	}, nil
 }
 
+// DumpActivity handles an activity dump request
+func (adm *ActivityDumpManager) DumpActivity(params *api.ActivityDumpParams) (*api.ActivityDumpMessage, error) {
+	if params.GetContainerID() == "" && params.GetCGroupID() == "" {
+		errMsg := fmt.Errorf("you must specify one selector between containerID and cgroupID")
+		return &api.ActivityDumpMessage{Error: errMsg.Error()}, errMsg
+	}
+
+	adm.Lock()
+	defer adm.Unlock()
+
+	var dumpDuration time.Duration
+	var err error
+	if params.Timeout != "" {
+		if dumpDuration, err = time.ParseDuration(params.Timeout); err != nil {
+			return nil, err
+		}
+	} else {
+		dumpDuration = adm.config.RuntimeSecurity.ActivityDumpCgroupDumpTimeout
+	}
+
+	if params.Storage.LocalStorageDirectory == "" {
+		params.Storage.LocalStorageDirectory = adm.config.RuntimeSecurity.ActivityDumpLocalStorageDirectory
+	}
+
+	newDump := NewActivityDump(adm, func(ad *ActivityDump) {
+		ad.Metadata.ContainerID = containerutils.ContainerID(params.GetContainerID())
+		ad.Metadata.CGroupContext.CGroupID = containerutils.CGroupID(params.GetCGroupID())
+
+		ad.SetTimeout(dumpDuration)
+
+		if params.GetDifferentiateArgs() {
+			ad.Metadata.DifferentiateArgs = true
+			ad.ActivityTree.DifferentiateArgs()
+		}
+	})
+
+	// add local storage requests
+	storageRequests, err := config.ParseStorageRequests(params.GetStorage())
+	if err != nil {
+		errMsg := fmt.Errorf("couldn't start tracing [%s]: %v", newDump.GetSelectorStr(), err)
+		return &api.ActivityDumpMessage{Error: errMsg.Error()}, errMsg
+	}
+	for _, request := range storageRequests {
+		newDump.AddStorageRequest(request)
+	}
+
+	if err = adm.insertActivityDump(newDump); err != nil {
+		errMsg := fmt.Errorf("couldn't start tracing [%s]: %v", newDump.GetSelectorStr(), err)
+		return &api.ActivityDumpMessage{Error: errMsg.Error()}, errMsg
+	}
+
+	return newDump.ToSecurityActivityDumpMessage(), nil
+}
+
 // StopActivityDump stops an active activity dump
 func (adm *ActivityDumpManager) StopActivityDump(params *api.ActivityDumpStopParams) (*api.ActivityDumpStopMessage, error) {
 	adm.Lock()
 	defer adm.Unlock()
 
-	if params.GetName() == "" && params.GetContainerID() == "" {
-		errMsg := fmt.Errorf("you must specify one selector between name and containerID")
+	if params.GetName() == "" && params.GetContainerID() == "" && params.GetCGroupID() == "" {
+		errMsg := fmt.Errorf("you must specify one selector between name, containerID and cgroupID")
 		return &api.ActivityDumpStopMessage{Error: errMsg.Error()}, errMsg
 	}
 
 	toDelete := -1
 	for i, d := range adm.activeDumps {
 		if (params.GetName() != "" && d.nameMatches(params.GetName())) ||
-			(params.GetContainerID() != "" && d.containerIDMatches(params.GetContainerID())) {
+			(params.GetContainerID() != "" && d.containerIDMatches(containerutils.ContainerID(params.GetContainerID())) ||
+				(params.GetCGroupID() != "" && string(d.Metadata.CGroupContext.CGroupID) == params.GetCGroupID())) {
 			d.Finalize(true)
 			seclog.Infof("tracing stopped for [%s]", d.GetSelectorStr())
 			toDelete = i
@@ -579,8 +644,10 @@ func (adm *ActivityDumpManager) StopActivityDump(params *api.ActivityDumpStopPar
 	var errMsg error
 	if params.GetName() != "" {
 		errMsg = fmt.Errorf("the activity dump manager does not contain any ActivityDump with the following name: %s", params.GetName())
-	} else /* if params.GetContainerID() != "" */ {
+	} else if params.GetContainerID() != "" {
 		errMsg = fmt.Errorf("the activity dump manager does not contain any ActivityDump with the following containerID: %s", params.GetContainerID())
+	} else /* if params.GetCGroupID() != "" */ {
+		errMsg = fmt.Errorf("the activity dump manager does not contain any ActivityDump with the following cgroup ID: %s", params.GetCGroupID())
 	}
 	return &api.ActivityDumpStopMessage{Error: errMsg.Error()}, errMsg
 }
@@ -677,7 +744,7 @@ func (pces *processCacheEntrySearcher) SearchTracedProcessCacheEntry(entry *mode
 	// compute the list of ancestors, we need to start inserting them from the root
 	ancestors := []*model.ProcessCacheEntry{entry}
 	parent := pces.getNextAncestorBinaryOrArgv0(&entry.ProcessContext)
-	for parent != nil && pces.ad.MatchesSelector(entry) {
+	for parent != nil && pces.ad.MatchesSelector(parent) {
 		ancestors = append(ancestors, parent)
 		parent = pces.getNextAncestorBinaryOrArgv0(&parent.ProcessContext)
 	}
@@ -687,8 +754,8 @@ func (pces *processCacheEntrySearcher) SearchTracedProcessCacheEntry(entry *mode
 	for _, parent = range ancestors {
 		node, _, err := pces.ad.ActivityTree.CreateProcessNode(parent, imageTag, activity_tree.Snapshot, false, pces.adm.resolvers)
 		if err != nil {
-			// if one of the parents wasn't inserted, leave now
-			break
+			// try to insert the other ancestors as we might find a valid root node in the lineage
+			continue
 		}
 		if node != nil {
 			// This step is important to populate the kernel space "traced_pids" map. Some traced event types use this
@@ -763,6 +830,8 @@ func (adm *ActivityDumpManager) SendStats() error {
 		}
 	}
 
+	adm.storage.SendTelemetry()
+
 	return nil
 }
 
@@ -770,13 +839,14 @@ func (adm *ActivityDumpManager) SendStats() error {
 func (adm *ActivityDumpManager) SnapshotTracedCgroups() {
 	var err error
 	var event model.CgroupTracingEvent
-	containerIDB := make([]byte, model.ContainerIDLen)
+	var cgroupFile model.PathKey
+
 	iterator := adm.tracedCgroupsMap.Iterate()
 	seclog.Infof("snapshotting traced_cgroups map")
 
-	for iterator.Next(&containerIDB, &event.ConfigCookie) {
+	for iterator.Next(&cgroupFile, &event.ConfigCookie) {
 		adm.Lock()
-		if adm.ignoreFromSnapshot[string(containerIDB)] {
+		if adm.ignoreFromSnapshot[cgroupFile] {
 			adm.Unlock()
 			continue
 		}
@@ -784,15 +854,8 @@ func (adm *ActivityDumpManager) SnapshotTracedCgroups() {
 
 		if err = adm.activityDumpsConfigMap.Lookup(&event.ConfigCookie, &event.Config); err != nil {
 			// this config doesn't exist anymore, remove expired entries
-			seclog.Errorf("config not found for (%s): %v", string(containerIDB), err)
-			_ = adm.tracedCgroupsMap.Delete(containerIDB)
-			continue
-		}
-
-		if _, err = event.ContainerContext.UnmarshalBinary(containerIDB[:]); err != nil {
-			seclog.Errorf("couldn't unmarshal container ID from traced_cgroups key: %v", err)
-			// remove invalid entry
-			_ = adm.tracedCgroupsMap.Delete(containerIDB)
+			seclog.Errorf("config not found for (%v): %v", cgroupFile, err)
+			_ = adm.tracedCgroupsMap.Delete(cgroupFile)
 			continue
 		}
 
@@ -837,6 +900,9 @@ func (adm *ActivityDumpManager) triggerLoadController() {
 
 	// handle overweight dumps
 	for _, ad := range dumps {
+		// restart a new dump for the same workload
+		newDump := adm.loadController.NextPartialDump(ad)
+
 		// stop the dump but do not release the cgroup
 		ad.Finalize(false)
 		seclog.Infof("tracing paused for [%s]", ad.GetSelectorStr())
@@ -852,9 +918,6 @@ func (adm *ActivityDumpManager) triggerLoadController() {
 			adm.emptyDropped.Inc()
 		}
 
-		// restart a new dump for the same workload
-		newDump := adm.loadController.NextPartialDump(ad)
-
 		adm.Lock()
 		if err := adm.insertActivityDump(newDump); err != nil {
 			seclog.Errorf("couldn't resume tracing [%s]: %v", newDump.GetSelectorStr(), err)
@@ -863,7 +926,7 @@ func (adm *ActivityDumpManager) triggerLoadController() {
 		}
 
 		// remove container ID from the map of ignored container IDs for the snapshot
-		delete(adm.ignoreFromSnapshot, ad.Metadata.ContainerID)
+		delete(adm.ignoreFromSnapshot, ad.Metadata.CGroupContext.CGroupFile)
 		adm.Unlock()
 	}
 }
@@ -886,7 +949,7 @@ func (adm *ActivityDumpManager) getOverweightDumps() []*ActivityDump {
 		if dumpSize >= int64(adm.config.RuntimeSecurity.ActivityDumpMaxDumpSize()) {
 			toDelete = append([]int{i}, toDelete...)
 			dumps = append(dumps, ad)
-			adm.ignoreFromSnapshot[ad.Metadata.ContainerID] = true
+			adm.ignoreFromSnapshot[ad.Metadata.CGroupContext.CGroupFile] = true
 		}
 	}
 	for _, i := range toDelete {

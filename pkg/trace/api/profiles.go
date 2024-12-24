@@ -86,11 +86,15 @@ func (r *HTTPReceiver) profileProxyHandler() http.Handler {
 		tags.WriteString(fmt.Sprintf("functionname:%s", strings.ToLower(r.conf.LambdaFunctionName)))
 		tags.WriteString("_dd.origin:lambda")
 	}
+	if r.conf.AzureContainerAppTags != "" {
+		tags.WriteString(r.conf.AzureContainerAppTags)
+	}
+
 	return newProfileProxy(r.conf, targets, keys, tags.String(), r.statsd)
 }
 
 func errorHandler(err error) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		msg := fmt.Sprintf("Profile forwarder is OFF: %v", err)
 		http.Error(w, msg, http.StatusInternalServerError)
 	})
@@ -105,7 +109,7 @@ func errorHandler(err error) http.Handler {
 // The tags will be added as a header to all proxied requests.
 // For more details please see multiTransport.
 func newProfileProxy(conf *config.AgentConfig, targets []*url.URL, keys []string, tags string, statsd statsd.ClientInterface) *httputil.ReverseProxy {
-	cidProvider := NewIDProvider(conf.ContainerProcRoot)
+	cidProvider := NewIDProvider(conf.ContainerProcRoot, conf.ContainerIDFromOriginInfo)
 	director := func(req *http.Request) {
 		req.Header.Set("Via", fmt.Sprintf("trace-agent %s", conf.AgentVersion))
 		if _, ok := req.Header["User-Agent"]; !ok {
@@ -116,8 +120,9 @@ func newProfileProxy(conf *config.AgentConfig, targets []*url.URL, keys []string
 		}
 		containerID := cidProvider.GetContainerID(req.Context(), req.Header)
 		if ctags := getContainerTags(conf.ContainerTags, containerID); ctags != "" {
-			req.Header.Set("X-Datadog-Container-Tags", ctags)
-			log.Debugf("Setting header X-Datadog-Container-Tags=%s for profiles proxy", ctags)
+			ctagsHeader := normalizeHTTPHeader(ctags)
+			req.Header.Set("X-Datadog-Container-Tags", ctagsHeader)
+			log.Debugf("Setting header X-Datadog-Container-Tags=%s for profiles proxy", ctagsHeader)
 		}
 		req.Header.Set("X-Datadog-Additional-Tags", tags)
 		log.Debugf("Setting header X-Datadog-Additional-Tags=%s for profiles proxy", tags)

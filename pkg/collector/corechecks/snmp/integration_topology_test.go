@@ -18,9 +18,10 @@ import (
 	"github.com/stretchr/testify/mock"
 
 	"github.com/DataDog/datadog-agent/comp/core/autodiscovery/integration"
+	nooptagger "github.com/DataDog/datadog-agent/comp/core/tagger/impl-noop"
 	"github.com/DataDog/datadog-agent/pkg/aggregator"
 	"github.com/DataDog/datadog-agent/pkg/aggregator/mocksender"
-	"github.com/DataDog/datadog-agent/pkg/config"
+	pkgconfigsetup "github.com/DataDog/datadog-agent/pkg/config/setup"
 	"github.com/DataDog/datadog-agent/pkg/version"
 
 	"github.com/DataDog/datadog-agent/pkg/collector/corechecks/snmp/internal/checkconfig"
@@ -31,9 +32,9 @@ import (
 
 func TestTopologyPayload_LLDP(t *testing.T) {
 	timeNow = common.MockTimeNow
-	aggregator.NewBufferedAggregator(nil, nil, "", 1*time.Hour)
+	aggregator.NewBufferedAggregator(nil, nil, nil, nooptagger.NewComponent(), "", 1*time.Hour)
 	invalidPath, _ := filepath.Abs(filepath.Join("internal", "test", "metadata.d"))
-	config.Datadog().SetWithoutSource("confd_path", invalidPath)
+	pkgconfigsetup.Datadog().SetWithoutSource("confd_path", invalidPath)
 
 	sess := session.CreateMockSession()
 	sessionFactory := func(*checkconfig.CheckConfig) (session.Session, error) {
@@ -660,6 +661,7 @@ profiles:
         {
             "id": "profile-metadata:1.2.3.4:101.1",
             "source_type": "lldp",
+            "integration": "snmp",
             "local": {
                 "device": {
                     "dd_id": "profile-metadata:1.2.3.4"
@@ -688,6 +690,7 @@ profiles:
         {
             "id": "profile-metadata:1.2.3.4:102.2",
             "source_type": "lldp",
+            "integration": "snmp",
             "local": {
                 "device": {
                     "dd_id": "profile-metadata:1.2.3.4"
@@ -733,9 +736,9 @@ profiles:
 
 func TestTopologyPayload_CDP(t *testing.T) {
 	timeNow = common.MockTimeNow
-	aggregator.NewBufferedAggregator(nil, nil, "", 1*time.Hour)
+	aggregator.NewBufferedAggregator(nil, nil, nil, nooptagger.NewComponent(), "", 1*time.Hour)
 	invalidPath, _ := filepath.Abs(filepath.Join("internal", "test", "metadata.d"))
-	config.Datadog().SetWithoutSource("confd_path", invalidPath)
+	pkgconfigsetup.Datadog().SetWithoutSource("confd_path", invalidPath)
 
 	sess := session.CreateMockSession()
 	sessionFactory := func(*checkconfig.CheckConfig) (session.Session, error) {
@@ -1362,6 +1365,7 @@ profiles:
         {
             "id": "profile-metadata:1.2.3.4:1.5",
             "source_type": "cdp",
+            "integration": "snmp",
             "local": {
                 "device": {
                     "dd_id": "profile-metadata:1.2.3.4"
@@ -1385,6 +1389,7 @@ profiles:
         {
             "id": "profile-metadata:1.2.3.4:2.3",
             "source_type": "cdp",
+            "integration": "snmp",
             "local": {
                 "device": {
                     "dd_id": "profile-metadata:1.2.3.4"
@@ -1426,9 +1431,9 @@ profiles:
 // we have different data for LLDP and CDP to test that we're only using LLDP to build the links
 func TestTopologyPayload_LLDP_CDP(t *testing.T) {
 	timeNow = common.MockTimeNow
-	aggregator.NewBufferedAggregator(nil, nil, "", 1*time.Hour)
+	aggregator.NewBufferedAggregator(nil, nil, nil, nooptagger.NewComponent(), "", 1*time.Hour)
 	invalidPath, _ := filepath.Abs(filepath.Join("internal", "test", "metadata.d"))
-	config.Datadog().SetWithoutSource("confd_path", invalidPath)
+	pkgconfigsetup.Datadog().SetWithoutSource("confd_path", invalidPath)
 
 	sess := session.CreateMockSession()
 	sessionFactory := func(*checkconfig.CheckConfig) (session.Session, error) {
@@ -2055,6 +2060,7 @@ profiles:
         {
             "id": "profile-metadata:1.2.3.4:101.1",
             "source_type": "lldp",
+            "integration": "snmp",
             "local": {
                 "device": {
                     "dd_id": "profile-metadata:1.2.3.4"
@@ -2083,6 +2089,7 @@ profiles:
         {
             "id": "profile-metadata:1.2.3.4:102.2",
             "source_type": "lldp",
+            "integration": "snmp",
             "local": {
                 "device": {
                     "dd_id": "profile-metadata:1.2.3.4"

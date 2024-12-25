@@ -37,6 +37,9 @@ const (
 	telemetryIntakeTrackType        = "agenttelemetry"
 	telemetryPath                   = "/api/v2/apmtelemetry"
 
+	metricPayloadType = "agent-metrics"
+	batchPayloadType  = "message-batch"
+
 	httpClientResetInterval = 5 * time.Minute
 	httpClientTimeout       = 10 * time.Second
 )
@@ -46,7 +49,9 @@ const (
 type sender interface {
 	startSession(cancelCtx context.Context) *senderSession
 	flushSession(ss *senderSession) error
+
 	sendAgentMetricPayloads(ss *senderSession, metrics []*agentmetric)
+	sendEventPayload(ss *senderSession, payloadType string, message string, payload map[string]interface{})
 }
 
 type client interface {
@@ -112,7 +117,14 @@ type payloadInfo struct {
 type senderSession struct {
 	cancelCtx       context.Context
 	payloadTemplate Payload
-	metricPayloads  []*AgentMetricsPayload
+
+	// metric payloads
+	metricPayloads []*AgentMetricsPayload
+
+	// event payload
+	eventPayloadType    string
+	eventPayloadMessage string
+	eventPayload        map[string]interface{}
 }
 
 // BatchPayloadWrapper exported so it can be turned into json
@@ -142,6 +154,8 @@ type MetricPayload struct {
 	P99     *float64               `json:"p99,omitempty"`
 }
 
+// -------------------
+// Utilities
 func httpClientFactory(cfg config.Reader, timeout time.Duration) func() *http.Client {
 	return func() *http.Client {
 		return &http.Client{
@@ -331,40 +345,73 @@ func (s *senderImpl) startSession(cancelCtx context.Context) *senderSession {
 	}
 }
 
+func (ss *senderSession) payloadCount() int {
+	payloadCount := len(ss.metricPayloads)
+	if ss.eventPayload != nil {
+		payloadCount++
+	}
+	return payloadCount
+}
+
 func (ss *senderSession) flush() Payload {
 	defer func() {
-		// Clear the payloads
+		// Clear payloads when done
 		ss.metricPayloads = nil
+		ss.eventPayloadType = ""
+		ss.eventPayloadMessage = ""
+		ss.eventPayload = nil
 	}()
 
 	// Create a payload with a single message or batch of messages
 	payload := ss.payloadTemplate
 	payload.EventTime = time.Now().Unix()
-	if len(ss.metricPayloads) == 1 {
-		// Single payload will be sent directly using the request type of the payload
-		mp := ss.metricPayloads[0]
-		payload.RequestType = "agent-metrics"
-		payload.Payload = payloadInfo{"agent-metrics", mp}.payload
-		return payload
+
+	// Create top-level event payload if needed
+	var eventWrapPayload map[string]interface{}
+	if ss.eventPayload != nil {
+		eventWrapPayload = make(map[string]interface{})
+		eventWrapPayload["message"] = ss.eventPayloadMessage
+		eventWrapPayload[ss.eventPayloadType] = ss.eventPayload
 	}
 
-	// Batch up multiple payloads into single "batch" payload type
-	batch := make([]BatchPayloadWrapper, 0)
-	for _, mp := range ss.metricPayloads {
-		batch = append(batch,
-			BatchPayloadWrapper{
-				RequestType: "agent-metrics",
-				Payload:     payloadInfo{"agent-metrics", mp}.payload,
-			})
+	if ss.payloadCount() == 1 {
+		// Either metric or event payload (single payload will be sent directly using the request type of the payload)
+		if len(ss.metricPayloads) == 1 {
+			mp := ss.metricPayloads[0]
+			payload.RequestType = metricPayloadType
+			payload.Payload = payloadInfo{metricPayloadType, mp}.payload
+		} else {
+			payload.RequestType = ss.eventPayloadType
+			payload.Payload = payloadInfo{ss.eventPayloadType, eventWrapPayload}.payload
+		}
+	} else {
+		// Batch up multiple payloads into single "batch" payload type
+		batch := make([]BatchPayloadWrapper, 0)
+		for _, mp := range ss.metricPayloads {
+			batch = append(batch,
+				BatchPayloadWrapper{
+					RequestType: metricPayloadType,
+					Payload:     payloadInfo{metricPayloadType, mp}.payload,
+				})
+		}
+		// add event payload if present
+		if ss.eventPayload != nil {
+			batch = append(batch,
+				BatchPayloadWrapper{
+					RequestType: ss.eventPayloadType,
+					Payload:     eventWrapPayload,
+				})
+		}
+		payload.RequestType = batchPayloadType
+		payload.Payload = batch
 	}
-	payload.RequestType = "message-batch"
-	payload.Payload = batch
+
 	return payload
 }
 
 func (s *senderImpl) flushSession(ss *senderSession) error {
 	// There is nothing to do if there are no payloads
-	if len(ss.metricPayloads) == 0 {
+	if ss.payloadCount() == 0 {
 		return nil
 	}
 
@@ -453,6 +500,13 @@ func (s *senderImpl) sendAgentMetricPayloads(ss *senderSession, metrics []*agent
 			s.addMetricPayload(am.name, am.family, m, payload)
 		}
 	}
+}
+
+func (s *senderImpl) sendEventPayload(ss *senderSession, payloadType string, message string, payload map[string]interface{}) {
+	ss.eventPayloadType = payloadType
+	ss.eventPayloadMessage = message
+	ss.eventPayload = payload
+	ss.eventPayload["agent_metadata"] = s.metadataPayloadTemplate
 }
 
 func (s *senderImpl) addHeaders(req *http.Request, requesttype, apikey, bodylen string, compressed bool) {

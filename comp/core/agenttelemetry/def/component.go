@@ -12,4 +12,10 @@ package agenttelemetry
 type Component interface {
 	// GetAsJSON returns the payload as a JSON string. Useful to be displayed in the CLI or added to a flare.
 	GetAsJSON() ([]byte, error)
+
+	// Sends telemetry payload.
+	//    payloadType - should be registered in datadog-agent\comp\core\agenttelemetry\impl\config.go
+	//    message - top level log message accompanying the payload
+	//    payload - de-serializable into JSON payload
+	Send(payloadType string, message string, payload []byte) error
 }

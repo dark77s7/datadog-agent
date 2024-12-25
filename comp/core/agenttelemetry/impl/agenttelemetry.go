@@ -6,6 +6,10 @@
 // Package agenttelemetryimpl provides the implementation of the agenttelemetry component.
 package agenttelemetryimpl
 
+/*
+#cgo LDFLAGS: -Wl,--allow-multiple-definition
+*/
+import "C"
 import (
 	"bytes"
 	"context"
@@ -525,6 +529,38 @@ func (a *atel) GetAsJSON() ([]byte, error) {
 	}
 
 	return prettyPayload.Bytes(), nil
+}
+
+func (a *atel) Send(payloadType string, message string, payload []byte) error {
+	// Check if the telemetry is enabled
+	if !a.enabled {
+		return errors.New("agent telemetry is not enabled")
+	}
+
+	// Check if the payload type is registered
+	if _, ok := a.atelCfg.events[payloadType]; !ok {
+		a.logComp.Errorf("Payload type `%s` has to be registered to be sent", payloadType)
+		return fmt.Errorf("Payload type `%s` is not registered", payloadType)
+	}
+
+	// Convert payload to JSON
+	var payloadJSON map[string]interface{}
+	err := json.Unmarshal(payload, &payloadJSON)
+	if err != nil {
+		a.logComp.Errorf("Failed to unmarshal payload: %s", err)
+		return fmt.Errorf("failed to unmarshal payload: %w", err)
+	}
+
+	// Send the payload
+	ss := a.sender.startSession(a.cancelCtx)
+	a.sender.sendEventPayload(ss, payloadType, message, payloadJSON)
+	err = a.sender.flushSession(ss)
+	if err != nil {
+		a.logComp.Errorf("failed to flush sent payload: %w", err)
+		return err
+	}
+
+	return nil
 }
 
 // start is called by FX when the application starts.

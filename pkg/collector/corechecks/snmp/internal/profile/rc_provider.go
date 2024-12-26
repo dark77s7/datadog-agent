@@ -20,20 +20,11 @@ var rcSingleton *UpdatableProvider
 var rcOnce sync.Once
 var rcError error
 
-func NewRCProvider(client rcclient.Component, initProfiles ProfileConfigMap) (Provider, error) {
+func NewRCProvider(client rcclient.Component) (Provider, error) {
 	rcOnce.Do(func() {
 		rcSingleton, rcError = buildAndSubscribeRCProvider(client)
 	})
-	if rcError != nil {
-		return nil, rcError
-	}
-	if len(initProfiles) == 0 {
-		return rcSingleton, nil
-	}
-	return &OverlayProvider{
-		base:         rcSingleton,
-		initProfiles: initProfiles,
-	}, nil
+	return rcSingleton, rcError
 }
 
 func buildAndSubscribeRCProvider(rcClient rcclient.Component) (*UpdatableProvider, error) {

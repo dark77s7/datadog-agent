@@ -437,7 +437,10 @@ func NewCheckConfig(rawInstance integration.Data, rawInitConfig integration.Data
 		if rcClient == nil {
 			return nil, fmt.Errorf("rc client not initialized, cannot use rc profiles")
 		}
-		c.ProfileProvider, err = profile.NewRCProvider(rcClient, initConfig.Profiles)
+		if len(initConfig.Profiles) > 0 {
+			return nil, fmt.Errorf("cannot provide profiles in config when use_remote_config_profiles is set")
+		}
+		c.ProfileProvider, err = profile.NewRCProvider(rcClient)
 	} else {
 		c.ProfileProvider, err = profile.GetProfileProvider(initConfig.Profiles)
 	}

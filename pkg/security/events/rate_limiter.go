@@ -163,6 +163,9 @@ func (rl *RateLimiter) SendStats() error {
 				}
 			}
 			if stat.Allowed > 0 {
+				fmt.Println("-------- Rate limiter:", metrics.MetricRateLimiterAllow)
+				fmt.Println("-------- Rate limiter: stat.Allowed", int64(stat.Allowed))
+				fmt.Println("-------- Rate limiter: tags", tags)
 				if err := rl.statsdClient.Count(metrics.MetricRateLimiterAllow, int64(stat.Allowed), tags, 1.0); err != nil {
 					return err
 				}

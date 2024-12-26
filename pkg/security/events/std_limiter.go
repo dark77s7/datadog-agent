@@ -34,7 +34,7 @@ func NewStdLimiter(limit rate.Limit, burst int) *StdLimiter {
 }
 
 // Allow returns whether the event is allowed
-func (l *StdLimiter) Allow(e Event) bool {
+func (l *StdLimiter) Allow(_ Event) bool {
 	if l.rateLimiter.Allow() {
 		l.allowed.Inc()
 		return true

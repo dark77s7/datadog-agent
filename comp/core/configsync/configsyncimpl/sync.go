@@ -22,7 +22,7 @@ func (cs *configSync) updater() error {
 	cfg, err := fetchConfig(cs.ctx, cs.client, cs.Authtoken.Get(), cs.url.String())
 	if err != nil {
 		if cs.connected {
-			cs.Log.Warnf("Loosed connectivity to core-agent to fetch config: %v", err)
+			cs.Log.Warnf("Lost connectivity to core-agent to fetch config: %v", err)
 			cs.connected = false
 		} else {
 			cs.Log.Debugf("Failed to fetch config from core agent: %v", err)

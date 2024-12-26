@@ -84,6 +84,7 @@ type DeviceDigest string
 // InitConfig is used to deserialize integration init config
 type InitConfig struct {
 	Profiles              profile.ProfileConfigMap          `yaml:"profiles"`
+	UseRCProfiles         bool                              `yaml:"use_remote_config_profiles"`
 	GlobalMetrics         []profiledefinition.MetricsConfig `yaml:"global_metrics"`
 	OidBatchSize          Number                            `yaml:"oid_batch_size"`
 	BulkMaxRepetitions    Number                            `yaml:"bulk_max_repetitions"`
@@ -432,8 +433,10 @@ func NewCheckConfig(rawInstance integration.Data, rawInitConfig integration.Data
 		return nil, err
 	}
 
-	// TODO(dpl) config flag for RC profiles
-	if rcClient != nil {
+	if initConfig.UseRCProfiles {
+		if rcClient == nil {
+			return nil, fmt.Errorf("rc client not initialized, cannot use rc profiles")
+		}
 		c.ProfileProvider, err = profile.NewRCProvider(rcClient, initConfig.Profiles)
 	} else {
 		c.ProfileProvider, err = profile.GetProfileProvider(initConfig.Profiles)

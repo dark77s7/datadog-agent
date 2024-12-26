@@ -21,6 +21,52 @@ import (
 	"github.com/DataDog/datadog-agent/pkg/security/secl/rules"
 )
 
+func TestMMapApproverZero(t *testing.T) {
+	SkipIfNotAvailable(t)
+
+	ruleDefs := []*rules.RuleDefinition{
+		{
+			ID:         "test_mmap2",
+			Expression: `mmap.protection == 0 && process.file.name == "testsuite"`,
+			Every: &rules.HumanReadableDuration{
+				Duration: 1 * time.Millisecond,
+			},
+		},
+	}
+
+	test, err := newTestModule(t, nil, ruleDefs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer test.Close()
+
+	test.WaitSignal(t, func() error {
+		data, err := unix.Mmap(0, 0, os.Getpagesize(), unix.PROT_NONE, unix.MAP_SHARED|unix.MAP_ANON)
+		if err != nil {
+			return fmt.Errorf("couldn't memory segment: %w", err)
+		}
+
+		if err := unix.Munmap(data); err != nil {
+			return fmt.Errorf("couldn't unmap memory segment: %w", err)
+		}
+		return nil
+	}, func(event *model.Event, _ *rules.Rule) {
+		assert.Equal(t, "mmap", event.GetType(), "wrong event type")
+		assert.Equal(t, uint64(unix.PROT_NONE), event.MMap.Protection&(unix.PROT_NONE), fmt.Sprintf("wrong protection: %s", model.Protection(event.MMap.Protection)))
+
+		value, _ := event.GetFieldValue("event.async")
+		assert.Equal(t, value.(bool), false)
+
+		executable, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertFieldEqual(t, event, "process.file.path", executable)
+
+		test.validateMMapSchema(t, event)
+	})
+}
+
 func TestMMapEvent(t *testing.T) {
 	SkipIfNotAvailable(t)
 
@@ -66,51 +112,5 @@ func TestMMapEvent(t *testing.T) {
 
 			test.validateMMapSchema(t, event)
 		})
-	})
-}
-
-func TestMMapApproverZero(t *testing.T) {
-	SkipIfNotAvailable(t)
-
-	ruleDefs := []*rules.RuleDefinition{
-		{
-			ID:         "test_mmap2",
-			Expression: `mmap.protection == 0 && process.file.name == "testsuite"`,
-			Every: &rules.HumanReadableDuration{
-				Duration: 1 * time.Millisecond,
-			},
-		},
-	}
-
-	test, err := newTestModule(t, nil, ruleDefs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer test.Close()
-
-	test.WaitSignal(t, func() error {
-		data, err := unix.Mmap(0, 0, os.Getpagesize(), unix.PROT_NONE, unix.MAP_SHARED|unix.MAP_ANON)
-		if err != nil {
-			return fmt.Errorf("couldn't memory segment: %w", err)
-		}
-
-		if err := unix.Munmap(data); err != nil {
-			return fmt.Errorf("couldn't unmap memory segment: %w", err)
-		}
-		return nil
-	}, func(event *model.Event, _ *rules.Rule) {
-		assert.Equal(t, "mmap", event.GetType(), "wrong event type")
-		assert.Equal(t, uint64(unix.PROT_NONE), event.MMap.Protection&(unix.PROT_NONE), fmt.Sprintf("wrong protection: %s", model.Protection(event.MMap.Protection)))
-
-		value, _ := event.GetFieldValue("event.async")
-		assert.Equal(t, value.(bool), false)
-
-		executable, err := os.Executable()
-		if err != nil {
-			t.Fatal(err)
-		}
-		assertFieldEqual(t, event, "process.file.path", executable)
-
-		test.validateMMapSchema(t, event)
 	})
 }

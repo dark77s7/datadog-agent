@@ -756,9 +756,6 @@ func (p *EBPFProbe) handleEvent(CPU int, data []byte) {
 			if err != nil {
 				var errResolution *path.ErrPathResolution
 				if errors.As(err, &errResolution) {
-					fmt.Println("--------------------------- errResolution detected in probe_ebpf relatedEvent", relatedEvent)
-					fmt.Println("--------------------------- errResolution detected in probe_ebpf relatedEven.type", relatedEvent.Type)
-					fmt.Println("--------------------------- errResolution detected in probe_ebpf relatedEvent.ID", relatedEvent.ID)
 					relatedEvent.SetPathResolutionError(&relatedEvent.ProcessCacheEntry.FileEvent, err)
 				} else {
 					return

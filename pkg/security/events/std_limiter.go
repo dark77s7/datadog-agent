@@ -7,8 +7,6 @@
 package events
 
 import (
-	"fmt"
-
 	"go.uber.org/atomic"
 	"golang.org/x/time/rate"
 
@@ -38,8 +36,6 @@ func NewStdLimiter(limit rate.Limit, burst int) *StdLimiter {
 // Allow returns whether the event is allowed
 func (l *StdLimiter) Allow(e Event) bool {
 	if l.rateLimiter.Allow() {
-		fmt.Println("--------------------------- allow ", e)
-
 		l.allowed.Inc()
 		return true
 	}

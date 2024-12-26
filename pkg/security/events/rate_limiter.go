@@ -114,7 +114,6 @@ func (rl *RateLimiter) Apply(ruleSet *rules.RuleSet, customRuleIDs []eval.RuleID
 				newLimiters[id] = NewStdLimiter(rate.Every(time.Duration(every)), burst)
 			}
 		} else {
-			fmt.Println("-----------------", id, every.Milliseconds())
 			newLimiters[id] = NewStdLimiter(rate.Every(time.Duration(every)), burst)
 		}
 	}

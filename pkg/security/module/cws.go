@@ -278,13 +278,16 @@ func (c *CWSConsumer) Stop() {
 
 // HandleCustomEvent is called by the probe when an event should be sent to Datadog but doesn't need evaluation
 func (c *CWSConsumer) HandleCustomEvent(rule *rules.Rule, event *events.CustomEvent) {
+	fmt.Println("--------------------------- HandleCustomEvent event  ", event)
 	c.SendEvent(rule, event, nil, "")
 }
 
 // SendEvent sends an event to the backend after checking that the rate limiter allows it for the provided rule
 // Implements the EventSender interface
 func (c *CWSConsumer) SendEvent(rule *rules.Rule, event events.Event, extTagsCb func() []string, service string) {
+	fmt.Println("--------------------------- SendEvent event  ", event)
 	if c.rateLimiter.Allow(rule.ID, event) {
+		fmt.Println("--------------------------- SendEvent event c.rateLimiter.Allow  ", event.GetType(), event)
 		c.eventSender.SendEvent(rule, event, extTagsCb, service)
 	} else {
 		seclog.Tracef("Event on rule %s was dropped due to rate limiting", rule.ID)

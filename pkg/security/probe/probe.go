@@ -344,6 +344,8 @@ func (p *Probe) AddDiscarderPushedCallback(cb DiscarderPushedCallback) {
 
 // DispatchCustomEvent sends a custom event to the probe event handler
 func (p *Probe) DispatchCustomEvent(rule *rules.Rule, event *events.CustomEvent) {
+	fmt.Println("--------------------------- DispatchCustomEvent event ", event)
+
 	traceEvent("Dispatching custom event %s", func() ([]byte, model.EventType, error) {
 		eventJSON, err := serializers.MarshalCustomEvent(event)
 		return eventJSON, event.GetEventType(), err
@@ -357,6 +359,7 @@ func (p *Probe) DispatchCustomEvent(rule *rules.Rule, event *events.CustomEvent)
 	// send specific event
 	if event.GetEventType() != model.UnknownEventType {
 		for _, handler := range p.customEventHandlers[event.GetEventType()] {
+			fmt.Println("--------------------------- send specific event ", event)
 			handler.HandleCustomEvent(rule, event)
 		}
 	}

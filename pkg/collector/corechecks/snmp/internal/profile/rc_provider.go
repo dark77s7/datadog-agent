@@ -12,6 +12,8 @@ import (
 	"github.com/DataDog/datadog-agent/pkg/networkdevice/profile/profiledefinition"
 	"github.com/DataDog/datadog-agent/pkg/remoteconfig/state"
 	"github.com/DataDog/datadog-agent/pkg/util/log"
+	"maps"
+	"slices"
 	"sync"
 	"time"
 )
@@ -20,6 +22,9 @@ var rcSingleton *UpdatableProvider
 var rcOnce sync.Once
 var rcError error
 
+// NewRCProvider returns a profile provider that subscribes to remote
+// configuration and receives profile updates from the backend. Multiple calls
+// will return the same singleton object.
 func NewRCProvider(client rcclient.Component) (Provider, error) {
 	rcOnce.Do(func() {
 		rcSingleton, rcError = buildAndSubscribeRCProvider(client)
@@ -27,6 +32,8 @@ func NewRCProvider(client rcclient.Component) (Provider, error) {
 	return rcSingleton, rcError
 }
 
+// buildAndSubscribeRCProvider builds a new UpdatableProvider and subscribes to
+// RC to receive profile updates.
 func buildAndSubscribeRCProvider(rcClient rcclient.Component) (*UpdatableProvider, error) {
 	// Load OOTB profiles from YAML
 	defaultProfiles := getYamlDefaultProfiles()
@@ -39,23 +46,32 @@ func buildAndSubscribeRCProvider(rcClient rcclient.Component) (*UpdatableProvide
 	provider.Update(userProfiles, defaultProfiles, time.Now())
 
 	// Subscribe to the RC client
-	rcClient.Subscribe(
-		state.ProductNDMDeviceProfilesCustom,
-		makeUpdate(provider))
+	log.Debug("Subscribing to remote config profiles")
+	rcClient.Subscribe(state.ProductNDMDeviceProfilesCustom, makeOnUpdate(provider))
 
 	return provider, nil
 }
 
+// unpackRawConfigs converts a map of raw remote config data to a map of parsed
+// profiles.
 func unpackRawConfigs(update map[string]state.RawConfig) (ProfileConfigMap, map[string]error) {
 	errors := make(map[string]error)
 	profiles := make(ProfileConfigMap)
-
-	for k, v := range update {
+	// iterate over keys in sorted order for determinism
+	keys := slices.Sorted(maps.Keys(update))
+	for _, k := range keys {
+		v := update[k]
 		var def profiledefinition.DeviceProfileRcConfig
 		err := json.Unmarshal(v.Config, &def)
 		if err != nil {
-			_ = log.Warnf("Error unmarshalling profile config %s: %v", k, err)
+			err = fmt.Errorf("could not unmarshal device profile config %q: %w", k, err)
+			_ = log.Warn(err)
 			errors[k] = err
+			continue
+		}
+		if _, ok := profiles[def.Profile.Name]; ok {
+			_ = log.Warnf("Received multiple profiles for name: %q", def.Profile.Name)
+			errors[k] = fmt.Errorf("multiple profiles for name: %q", def.Profile.Name)
 			continue
 		}
 		profiles[def.Profile.Name] = ProfileConfig{
@@ -67,9 +83,14 @@ func unpackRawConfigs(update map[string]state.RawConfig) (ProfileConfigMap, map[
 	return profiles, errors
 }
 
-func makeUpdate(up *UpdatableProvider) func(map[string]state.RawConfig, func(string, state.ApplyStatus)) {
+// makeOnUpdate generates an onUpdate function suitable for rcclient.Component.
+// Subscribe that will update the given UpdatableProvider whenever the RC client
+// receives new profiles.
+func makeOnUpdate(up *UpdatableProvider) func(map[string]state.RawConfig, func(string, state.ApplyStatus)) {
 	onUpdate := func(update map[string]state.RawConfig, applyStateCallback func(string, state.ApplyStatus)) {
+		log.Debugf("Received %d profiles via remote configuration", len(update))
 		userProfiles, errors := unpackRawConfigs(update)
+		// update is a dict of ALL current custom profiles, so we replace the existing set entirely.
 		up.Update(userProfiles, up.defaultProfiles, time.Now())
 		// Report successes/errors
 		for k := range update {

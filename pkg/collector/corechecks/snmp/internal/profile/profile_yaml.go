@@ -49,6 +49,11 @@ func loadYamlProfiles() (ProfileConfigMap, error) {
 
 func getProfileDefinitions(profilesFolder string, isUserProfile bool) (ProfileConfigMap, error) {
 	profilesRoot := getProfileConfdRoot(profilesFolder)
+	if isUserProfile {
+		log.Debugf("Reading user profiles from %s", profilesRoot)
+	} else {
+		log.Debugf("Reading ootb profiles from %s", profilesRoot)
+	}
 	files, err := os.ReadDir(profilesRoot)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read profile dir %q: %w", profilesRoot, err)

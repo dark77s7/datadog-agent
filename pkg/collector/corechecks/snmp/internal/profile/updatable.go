@@ -22,6 +22,7 @@ type UpdatableProvider struct {
 // type assertion
 var _ Provider = (*UpdatableProvider)(nil)
 
+// Update installs new user and default profiles.
 func (up *UpdatableProvider) Update(userProfiles, defaultProfiles ProfileConfigMap, now time.Time) {
 	up.lock.Lock()
 	defer up.lock.Unlock()
@@ -31,6 +32,7 @@ func (up *UpdatableProvider) Update(userProfiles, defaultProfiles ProfileConfigM
 	up.lastUpdated = now
 }
 
+// HasProfile implements Provider.HasProfile
 func (up *UpdatableProvider) HasProfile(profileName string) bool {
 	up.lock.RLock()
 	defer up.lock.RUnlock()
@@ -38,6 +40,7 @@ func (up *UpdatableProvider) HasProfile(profileName string) bool {
 	return ok
 }
 
+// GetProfile implements Provider.GetProfile
 func (up *UpdatableProvider) GetProfile(profileName string) *ProfileConfig {
 	up.lock.RLock()
 	defer up.lock.RUnlock()
@@ -48,26 +51,16 @@ func (up *UpdatableProvider) GetProfile(profileName string) *ProfileConfig {
 	return &profile
 }
 
+// LastUpdated implements Provider.LastUpdated
 func (up *UpdatableProvider) LastUpdated() time.Time {
 	up.lock.RLock()
 	defer up.lock.RUnlock()
 	return up.lastUpdated
 }
 
+// GetProfileForSysObjectID implements Provider.GetProfileForSysObjectID
 func (up *UpdatableProvider) GetProfileForSysObjectID(sysObjectID string) (*ProfileConfig, error) {
 	up.lock.RLock()
 	defer up.lock.RUnlock()
 	return getProfileForSysObjectID(up.resolvedProfiles, sysObjectID)
-}
-
-func (up *UpdatableProvider) getDefaultProfiles() ProfileConfigMap {
-	up.lock.RLock()
-	defer up.lock.RUnlock()
-	return up.defaultProfiles.Clone()
-}
-
-func (up *UpdatableProvider) getUserProfiles() ProfileConfigMap {
-	up.lock.RLock()
-	defer up.lock.RUnlock()
-	return up.userProfiles.Clone()
 }

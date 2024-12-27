@@ -95,7 +95,7 @@ func TestUpdatableProvider(t *testing.T) {
 	r.Update(customProfiles.Clone(), defaultProfiles.Clone(), mockClock.Now())
 	// TODO: Provide a better signal here so that we can detect log failures without relying on logging
 	if !logs.AssertAbsent(t, "validation error") {
-
+		t.Fatal("Aborting due to validation failures.")
 	}
 	t.Run("custom inherits custom", func(t *testing.T) {
 		profile, err := r.GetProfileForSysObjectID("9.9.9.9.12")

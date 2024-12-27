@@ -163,6 +163,7 @@ func (rl *RateLimiter) SendStats() error {
 				}
 			}
 			if stat.Allowed > 0 {
+				fmt.Println("------------------------- in rate_limiter SendStats")
 				if err := rl.statsdClient.Count(metrics.MetricRateLimiterAllow, int64(stat.Allowed), tags, 1.0); err != nil {
 					return err
 				}

@@ -22,7 +22,8 @@ type TokenLimiter struct {
 }
 
 // Allow returns whether the event is allowed
-func (tkl *TokenLimiter) Allow(event Event) bool {
+func (tkl *TokenLimiter) Allow(event Event, _ string) bool {
+	fmt.Println("ffffffffffffffff")
 	return tkl.limiter.Allow(tkl.getToken(event))
 }
 

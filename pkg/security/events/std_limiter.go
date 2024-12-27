@@ -37,8 +37,9 @@ func NewStdLimiter(limit rate.Limit, burst int) *StdLimiter {
 }
 
 // Allow returns whether the event is allowed
-func (l *StdLimiter) Allow(_ Event) bool {
+func (l *StdLimiter) Allow(_ Event, ruleID string) bool {
 	if l.rateLimiter.Allow() {
+		fmt.Println("------------------- ruleID", ruleID)
 		printStackTrace()
 		l.allowed.Inc()
 		return true

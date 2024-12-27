@@ -18,7 +18,7 @@ type AnomalyDetectionLimiter struct {
 }
 
 // Allow returns whether the event is allowed
-func (al *AnomalyDetectionLimiter) Allow(event Event) bool {
+func (al *AnomalyDetectionLimiter) Allow(event Event, _ string) bool {
 	return al.limiter.Allow(event.GetWorkloadID())
 }
 

@@ -48,7 +48,7 @@ var (
 
 // Limiter defines a limiter interface
 type Limiter interface {
-	Allow(event Event) bool
+	Allow(event Event, ruleID string) bool
 	SwapStats() []utils.LimiterStat
 }
 
@@ -130,7 +130,7 @@ func (rl *RateLimiter) Allow(ruleID string, event Event) bool {
 	if !ok {
 		return false
 	}
-	return limiter.Allow(event)
+	return limiter.Allow(event, ruleID)
 }
 
 // GetStats returns a map indexed by ids that describes the amount of events

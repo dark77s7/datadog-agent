@@ -966,6 +966,7 @@ func (tm *testModule) validateSyscallsInFlight() {
 
 func (tm *testModule) Close() {
 	if !tm.opts.staticOpts.disableRuntimeSecurity {
+		tm.cws.SendStats()
 		tm.eventMonitor.SendStats()
 	}
 

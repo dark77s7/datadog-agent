@@ -149,8 +149,6 @@ func (rl *RateLimiter) GetStats() map[string][]utils.LimiterStat {
 // SendStats sends statistics about the number of sent and drops events
 // for the set of rules
 func (rl *RateLimiter) SendStats() error {
-	rl.Lock()
-	defer rl.Unlock()
 	for ruleID, stats := range rl.GetStats() {
 		ruleIDTag := fmt.Sprintf("rule_id:%s", ruleID)
 		for _, stat := range stats {

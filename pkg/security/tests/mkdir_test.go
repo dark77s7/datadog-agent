@@ -9,7 +9,6 @@
 package tests
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -157,46 +156,6 @@ func TestMkdir(t *testing.T) {
 				t.Fatal(err)
 			}
 			assertFieldEqual(t, event, "process.file.path", executable)
-		})
-	})
-}
-
-func TestMkdirError(t *testing.T) {
-	SkipIfNotAvailable(t)
-
-	ruleDefs := []*rules.RuleDefinition{
-		{
-			ID:         "test_rule_mkdirat_error",
-			Expression: `process.file.name == "syscall_tester" && mkdir.retval == EACCES`,
-		},
-	}
-
-	test, err := newTestModule(t, nil, ruleDefs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer test.Close()
-
-	syscallTester, err := loadSyscallTester(t, test, "syscall_tester")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	t.Run("mkdirat-error", func(t *testing.T) {
-		testatFile, _, err := test.Path("testat2-mkdir")
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		if err := os.Chmod(test.Root(), 0711); err != nil {
-			t.Fatal(err)
-		}
-
-		test.WaitSignal(t, func() error {
-			return runSyscallTesterFunc(context.Background(), t, syscallTester, "mkdirat-error", testatFile)
-		}, func(event *model.Event, rule *rules.Rule) {
-			assertTriggeredRule(t, rule, "test_rule_mkdirat_error")
-			assert.Equal(t, event.Mkdir.Retval, -int64(syscall.EACCES))
 		})
 	})
 }

@@ -954,6 +954,8 @@ func (tm *testModule) cleanup() {
 }
 
 func (tm *testModule) validateAbnormalPaths() {
+	fmt.Println("------------------------- in validateAbnormalPaths")
+
 	assert.Zero(tm.t, tm.statsdClient.Get("datadog.runtime_security.rules.rate_limiter.allow:rule_id:abnormal_path"), "abnormal error detected")
 }
 

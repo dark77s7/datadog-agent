@@ -303,6 +303,7 @@ func (c *CWSConsumer) HandleActivityDump(dump *api.ActivityDumpStreamMessage) {
 
 // SendStats send stats
 func (c *CWSConsumer) SendStats() {
+	fmt.Println("------------------------- in SendStats")
 	ackChan := make(chan bool, 1)
 	c.sendStatsChan <- ackChan
 	<-ackChan

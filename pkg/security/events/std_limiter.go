@@ -7,6 +7,9 @@
 package events
 
 import (
+	"fmt"
+	"runtime"
+
 	"go.uber.org/atomic"
 	"golang.org/x/time/rate"
 
@@ -36,6 +39,7 @@ func NewStdLimiter(limit rate.Limit, burst int) *StdLimiter {
 // Allow returns whether the event is allowed
 func (l *StdLimiter) Allow(_ Event) bool {
 	if l.rateLimiter.Allow() {
+		printStackTrace()
 		l.allowed.Inc()
 		return true
 	}
@@ -52,4 +56,11 @@ func (l *StdLimiter) SwapStats() []utils.LimiterStat {
 			Allowed: l.allowed.Swap(0),
 		},
 	}
+
+}
+
+func printStackTrace() {
+	buf := make([]byte, 1024)
+	n := runtime.Stack(buf, false)
+	fmt.Printf("Stack trace:\n%s", buf[:n])
 }

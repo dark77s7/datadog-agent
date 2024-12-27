@@ -7,7 +7,6 @@
 package statsdclient
 
 import (
-	"fmt"
 	"strings"
 	"sync"
 
@@ -32,7 +31,6 @@ func NewStatsdClient() *StatsdClient {
 
 // Get return the count
 func (s *StatsdClient) Get(key string) int64 {
-	fmt.Println("------------- key", key)
 	s.lock.RLock()
 	defer s.lock.RUnlock()
 	return s.counts[key]
@@ -57,11 +55,6 @@ func (s *StatsdClient) GetByPrefix(prefix string) map[string]int64 {
 
 // Gauge does nothing and returns nil
 func (s *StatsdClient) Gauge(name string, value float64, tags []string, _ float64) error {
-	if strings.HasPrefix(name, "datadog.runtime_security.rules") || strings.HasPrefix(name, "datadog.runtime_security.ruleset_loaded") {
-		fmt.Println("allowallowallowallowallowallowallowallow gauge", name, value, tags)
-
-	}
-
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
@@ -78,10 +71,6 @@ func (s *StatsdClient) Gauge(name string, value float64, tags []string, _ float6
 // Count does nothing and returns nil
 func (s *StatsdClient) Count(name string, value int64, tags []string, _ float64) error {
 	s.lock.Lock()
-	if strings.HasPrefix(name, "datadog.runtime_security.rules") || strings.HasPrefix(name, "datadog.runtime_security.ruleset_loaded") {
-		fmt.Println("allowallowallowallowallowallowallowallow count", name, value, tags)
-
-	}
 	defer s.lock.Unlock()
 
 	if len(tags) == 0 {

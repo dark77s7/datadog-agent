@@ -164,7 +164,7 @@ func (m *EBPFMonitors) ProcessEvent(event *model.Event) {
 
 	var pathErr *path.ErrPathResolution
 	if errors.As(event.Error, &pathErr) {
-		fmt.Println("--------------------------- errResolution detected event ", event)
+		fmt.Println("------------- errResolution detected event ", event)
 		m.ebpfProbe.probe.DispatchCustomEvent(
 			NewAbnormalEvent(m.ebpfProbe.GetAgentContainerContext(), events.AbnormalPathRuleID, events.AbnormalPathRuleDesc, event, pathErr.Err),
 		)

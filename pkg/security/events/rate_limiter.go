@@ -8,6 +8,7 @@ package events
 
 import (
 	"fmt"
+	"runtime"
 	"sync"
 	"time"
 
@@ -164,7 +165,7 @@ func (rl *RateLimiter) SendStats() error {
 			}
 			if stat.Allowed > 0 {
 				if ruleID == AbnormalPathRuleID {
-					panic(fmt.Errorf("got AbnormalPathRuleID"))
+					printStackTrace()
 				}
 				if err := rl.statsdClient.Count(metrics.MetricRateLimiterAllow, int64(stat.Allowed), tags, 1.0); err != nil {
 					return err
@@ -173,4 +174,10 @@ func (rl *RateLimiter) SendStats() error {
 		}
 	}
 	return nil
+}
+
+func printStackTrace() {
+	buf := make([]byte, 1024)
+	n := runtime.Stack(buf, false)
+	fmt.Printf("Stack trace:\n%s", buf[:n])
 }
